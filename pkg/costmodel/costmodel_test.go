@@ -4,12 +4,14 @@ import (
 	"math/rand"
 	"testing"
 	"time"
+	"math"
 
 	"github.com/opencost/opencost/core/pkg/clustercache"
 	"github.com/opencost/opencost/core/pkg/util"
 	"github.com/stretchr/testify/assert"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestIsValidNodeName(t *testing.T) {
@@ -344,6 +346,151 @@ func Test_getContainerAllocation(t *testing.T) {
 			}
 			if ramAllocation[0].Timestamp != c.expectedRAMAllocation[0].Timestamp {
 				t.Errorf("RAM Allocation mismatch. Expected Timestamp: %f. Got: %f", ramAllocation[0].Timestamp, c.expectedRAMAllocation[0].Timestamp)
+			}
+		})
+	}
+}
+
+func TestGetContainerAllocation(t *testing.T) {
+	cases := []struct {
+		name           string
+		req            *util.Vector
+		used           *util.Vector
+		allocationType string
+		expected       []*util.Vector
+	}{
+		{
+			name: "request > usage",
+			req: &util.Vector{
+				Value:     100,
+				Timestamp: 1672531200,
+			},
+			used: &util.Vector{
+				Value:     50,
+				Timestamp: 1672531200,
+			},
+			allocationType: "RAM",
+			expected: []*util.Vector{
+				{
+					Value:     100,
+					Timestamp: 1672531200,
+				},
+			},
+		},
+		{
+			name: "usage > request",
+			req: &util.Vector{
+				Value:     50,
+				Timestamp: 1672531200,
+			},
+			used: &util.Vector{
+				Value:     100,
+				Timestamp: 1672531200,
+			},
+			allocationType: "RAM",
+			expected: []*util.Vector{
+				{
+					Value:     100,
+					Timestamp: 1672531200,
+				},
+			},
+		},
+		{
+			name: "only request is non-nil",
+			req: &util.Vector{
+				Value:     100,
+				Timestamp: 1672531200,
+			},
+			used:           nil,
+			allocationType: "CPU",
+			expected: []*util.Vector{
+				{
+					Value:     100,
+					Timestamp: 1672531200,
+				},
+			},
+		},
+		{
+			name: "only used is non-nil",
+			req:  nil,
+			used: &util.Vector{
+				Value:     100,
+				Timestamp: 1672531200,
+			},
+			allocationType: "CPU",
+			expected: []*util.Vector{
+				{
+					Value:     100,
+					Timestamp: 1672531200,
+				},
+			},
+		},
+		{
+			name:           "both req and used are nil",
+			req:            nil,
+			used:           nil,
+			allocationType: "GPU",
+			expected: []*util.Vector{
+				{
+					Value:     0,
+					Timestamp: float64(time.Now().UTC().Unix()),
+				},
+			},
+		},
+		{
+			name: "NaN in request value",
+			req: &util.Vector{
+				Value:     math.NaN(),
+				Timestamp: 1672531200,
+			},
+			used: &util.Vector{
+				Value:     50,
+				Timestamp: 1672531200,
+			},
+			allocationType: "RAM",
+			expected: []*util.Vector{
+				{
+					Value:     50,
+					Timestamp: 1672531200,
+				},
+			},
+		},
+		{
+			name: "NaN in used value",
+			req: &util.Vector{
+				Value:     100,
+				Timestamp: 1672531200,
+			},
+			used: &util.Vector{
+				Value:     math.NaN(),
+				Timestamp: 1672531200,
+			},
+			allocationType: "CPU",
+			expected: []*util.Vector{
+				{
+					Value:     100,
+					Timestamp: 1672531200,
+				},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// For the nil case, the timestamp is dynamic, so we need to handle it separately
+			if tc.name == "both req and used are nil" {
+				result := getContainerAllocation(tc.req, tc.used, tc.allocationType)
+				if result[0].Value != 0 {
+					t.Errorf("Expected value to be 0, but got %f", result[0].Value)
+				}
+				if time.Now().UTC().Unix()-int64(result[0].Timestamp) > 5 {
+					t.Errorf("Expected timestamp to be recent, but it was not")
+				}
+				return
+			}
+			result := getContainerAllocation(tc.req, tc.used, tc.allocationType)
+			if diff := cmp.Diff(tc.expected, result); diff != "" {
+				t.Errorf("getContainerAllocation() mismatch (-want +got):\n%s", diff)
 			}
 		})
 	}

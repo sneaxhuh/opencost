@@ -139,61 +139,17 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 	ds := cm.DataSource
 	mq := ds.Metrics()
 
-	grp := source.NewQueryGroup()
+	// Get Kubernetes data
 
-	resChRAMUsage := source.WithGroup(grp, mq.QueryRAMUsageAvg(start, end))
-	resChCPUUsage := source.WithGroup(grp, mq.QueryCPUUsageAvg(start, end))
-	resChNetZoneRequests := source.WithGroup(grp, mq.QueryNetZoneGiB(start, end))
-	resChNetRegionRequests := source.WithGroup(grp, mq.QueryNetRegionGiB(start, end))
-	resChNetInternetRequests := source.WithGroup(grp, mq.QueryNetInternetGiB(start, end))
-
-	// Pull pod information from k8s API
-	podlist := cm.Cache.GetAllPods()
-
-	podDeploymentsMapping, err := getPodDeployments(cm.Cache, podlist, clusterID)
+	podlist, podDeploymentsMapping, podServicesMapping, namespaceLabelsMapping, namespaceAnnotationsMapping, err := getKubeCostData(cm.Cache, clusterID)
 	if err != nil {
 		return nil, err
 	}
 
-	podServicesMapping, err := getPodServices(cm.Cache, podlist, clusterID)
+	// Get Prometheus data
+	resRAMUsage, resCPUUsage, resNetZoneRequests, resNetRegionRequests, resNetInternetRequests, err := getPrometheusData(mq, start, end)
 	if err != nil {
-		return nil, err
-	}
-
-	namespaceLabelsMapping, err := getNamespaceLabels(cm.Cache, clusterID)
-	if err != nil {
-		return nil, err
-	}
-
-	namespaceAnnotationsMapping, err := getNamespaceAnnotations(cm.Cache, clusterID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Process Prometheus query results. Handle errors using ctx.Errors.
-	resRAMUsage, _ := resChRAMUsage.Await()
-	resCPUUsage, _ := resChCPUUsage.Await()
-	resNetZoneRequests, _ := resChNetZoneRequests.Await()
-	resNetRegionRequests, _ := resChNetRegionRequests.Await()
-	resNetInternetRequests, _ := resChNetInternetRequests.Await()
-
-	// NOTE: The way we currently handle errors and warnings only early returns if there is an error. Warnings
-	// NOTE: will not propagate unless coupled with errors.
-	if grp.HasErrors() {
-		// To keep the context of where the errors are occurring, we log the errors here and pass them the error
-		// back to the caller. The caller should handle the specific case where error is an ErrorCollection
-		for _, queryErr := range grp.Errors() {
-			if queryErr.Error != nil {
-				log.Errorf("ComputeCostData: Request Error: %s", queryErr.Error)
-			}
-			if queryErr.ParseError != nil {
-				log.Errorf("ComputeCostData: Parsing Error: %s", queryErr.ParseError)
-			}
-		}
-
-		// ErrorCollection is an collection of errors wrapped in a single error implementation
-		// We opt to not return an error for the sake of running as a pure exporter.
-		log.Warnf("ComputeCostData: continuing despite prometheus errors: %s", grp.Error())
+		log.Warnf("ComputeCostData: continuing despite prometheus errors: %s", err)
 	}
 
 	defer measureTime(time.Now(), profileThreshold, "ComputeCostData: Processing Query Data")
@@ -227,19 +183,112 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 		networkUsageMap = make(map[string]*NetworkUsageData)
 	}
 
+	containerNameCost, missingNodes, missingContainers, err := getContainerCostData(podlist, resRAMUsage, resCPUUsage, pvClaimMapping, unmountedPVs, networkUsageMap, podDeploymentsMapping, podServicesMapping, namespaceLabelsMapping, namespaceAnnotationsMapping, nodes, cm.ClusterMap, cp, clusterID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Use unmounted pvs to create a mapping of "Unmounted-<Namespace>" containers
+	// to pass along the cost data
+	unmounted := findUnmountedPVCostData(cm.ClusterMap, unmountedPVs, namespaceLabelsMapping, namespaceAnnotationsMapping)
+	for k, costs := range unmounted {
+		log.Debugf("Unmounted PVs in Namespace/ClusterID: %s/%s", costs.Namespace, costs.ClusterID)
+
+		containerNameCost[k] = costs
+	}
+
+	err = findDeletedNodeInfo(cm.DataSource, missingNodes, start, end)
+	if err != nil {
+		log.Errorf("Error fetching historical node data: %s", err.Error())
+	}
+
+	err = findDeletedPodInfo(cm.DataSource, missingContainers, start, end)
+	if err != nil {
+		log.Errorf("Error fetching historical pod data: %s", err.Error())
+	}
+	return containerNameCost, err
+}
+
+func getKubeCostData(cache clustercache.ClusterCache, clusterID string) ([]*clustercache.Pod, map[string]map[string][]string, map[string]map[string][]string, map[string]map[string]string, map[string]map[string]string, error) {
+	// Pull pod information from k8s API
+
+	podlist := cache.GetAllPods()
+
+	podDeploymentsMapping, err := getPodDeployments(cache, podlist, clusterID)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+
+	podServicesMapping, err := getPodServices(cache, podlist, clusterID)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+
+	namespaceLabelsMapping, err := getNamespaceLabels(cache, clusterID)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+
+	namespaceAnnotationsMapping, err := getNamespaceAnnotations(cache, clusterID)
+	if err != nil {
+		return nil, nil, nil, nil, nil, err
+	}
+
+	return podlist, podDeploymentsMapping, podServicesMapping, namespaceLabelsMapping, namespaceAnnotationsMapping, nil
+}
+
+func getPrometheusData(mq source.MetricsQuerier, start, end time.Time) ([]*source.ContainerMetricResult, []*source.ContainerMetricResult, []*source.NetZoneGiBResult, []*source.NetRegionGiBResult, []*source.NetInternetGiBResult, error) {
+	grp := source.NewQueryGroup()
+
+	resChRAMUsage := source.WithGroup(grp, mq.QueryRAMUsageAvg(start, end))
+	resChCPUUsage := source.WithGroup(grp, mq.QueryCPUUsageAvg(start, end))
+	resChNetZoneRequests := source.WithGroup(grp, mq.QueryNetZoneGiB(start, end))
+	resChNetRegionRequests := source.WithGroup(grp, mq.QueryNetRegionGiB(start, end))
+	resChNetInternetRequests := source.WithGroup(grp, mq.QueryNetInternetGiB(start, end))
+
+	// Process Prometheus query results. Handle errors using ctx.Errors.
+	resRAMUsage, _ := resChRAMUsage.Await()
+	resCPUUsage, _ := resChCPUUsage.Await()
+	resNetZoneRequests, _ := resChNetZoneRequests.Await()
+	resNetRegionRequests, _ := resChNetRegionRequests.Await()
+	resNetInternetRequests, _ := resChNetInternetRequests.Await()
+
+	// NOTE: The way we currently handle errors and warnings only early returns if there is an error. Warnings
+	// NOTE: will not propagate unless coupled with errors.
+	if grp.HasErrors() {
+		// To keep the context of where the errors are occurring, we log the errors here and pass them the error
+		// back to the caller. The caller should handle the specific case where error is an ErrorCollection
+		for _, queryErr := range grp.Errors() {
+			if queryErr.Error != nil {
+				log.Errorf("ComputeCostData: Request Error: %s", queryErr.Error)
+			}
+			if queryErr.ParseError != nil {
+				log.Errorf("ComputeCostData: Parsing Error: %s", queryErr.ParseError)
+			}
+		}
+
+		// ErrorCollection is an collection of errors wrapped in a single error implementation
+		// We opt to not return an error for the sake of running as a pure exporter.
+		return resRAMUsage, resCPUUsage, resNetZoneRequests, resNetRegionRequests, resNetInternetRequests, grp.Error()
+	}
+
+	return resRAMUsage, resCPUUsage, resNetZoneRequests, resNetRegionRequests, resNetInternetRequests, nil
+}
+
+func getContainerCostData(podlist []*clustercache.Pod, resRAMUsage, resCPUUsage []*source.ContainerMetricResult, pvClaimMapping map[string]*PersistentVolumeClaimData, unmountedPVs map[string][]*PersistentVolumeClaimData, networkUsageMap map[string]*NetworkUsageData, podDeploymentsMapping, podServicesMapping map[string]map[string][]string, namespaceLabelsMapping, namespaceAnnotationsMapping map[string]map[string]string, nodes map[string]*costAnalyzerCloud.Node, clusterMap clusters.ClusterMap, cp costAnalyzerCloud.Provider, clusterID string) (map[string]*CostData, map[string]*costAnalyzerCloud.Node, map[string]*CostData, error) {
 	containerNameCost := make(map[string]*CostData)
 	containers := make(map[string]bool)
 
 	RAMUsedMap, err := GetContainerMetricVector(resRAMUsage, clusterID)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	for key := range RAMUsedMap {
 		containers[key] = true
 	}
 	CPUUsedMap, err := GetContainerMetricVector(resCPUUsage, clusterID) // No need to normalize here, as this comes from a counter
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, err
 	}
 	for key := range CPUUsedMap {
 		containers[key] = true
@@ -251,7 +300,7 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 		}
 		cs, err := NewContainerMetricsFromPod(pod, clusterID)
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		for _, c := range cs {
 			containers[c.Key()] = true // captures any containers that existed for a time < a prometheus scrape interval. We currently charge 0 for this but should charge something.
@@ -268,6 +317,7 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 		// deleted so we have usage information but not request information. In that case,
 		// we return partial data for CPU and RAM: only usage and not requests.
 		if pod, ok := currentContainers[key]; ok {
+
 			podName := pod.Name
 			ns := pod.Namespace
 
@@ -437,7 +487,7 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 					Labels:          podLabels,
 					NamespaceLabels: nsLabels,
 					ClusterID:       clusterID,
-					ClusterName:     cm.ClusterMap.NameFor(clusterID),
+					ClusterName:     clusterMap.NameFor(clusterID),
 				}
 
 				var cpuReq, cpuUse *util.Vector
@@ -465,7 +515,7 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 			log.Debug("The container " + key + " has been deleted. Calculating allocation but resulting object will be missing data.")
 			c, err := NewContainerMetricFromKey(key)
 			if err != nil {
-				return nil, err
+				return nil, nil, nil, err
 			}
 
 			// CPU and RAM requests are obtained from the Kubernetes API.
@@ -518,7 +568,7 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 				Annotations:     namespaceAnnotations,
 				NamespaceLabels: namespacelabels,
 				ClusterID:       c.ClusterID,
-				ClusterName:     cm.ClusterMap.NameFor(c.ClusterID),
+				ClusterName:     clusterMap.NameFor(c.ClusterID),
 			}
 
 			var cpuReq, cpuUse *util.Vector
@@ -543,25 +593,7 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 			missingContainers[key] = costs
 		}
 	}
-	// Use unmounted pvs to create a mapping of "Unmounted-<Namespace>" containers
-	// to pass along the cost data
-	unmounted := findUnmountedPVCostData(cm.ClusterMap, unmountedPVs, namespaceLabelsMapping, namespaceAnnotationsMapping)
-	for k, costs := range unmounted {
-		log.Debugf("Unmounted PVs in Namespace/ClusterID: %s/%s", costs.Namespace, costs.ClusterID)
-
-		containerNameCost[k] = costs
-	}
-
-	err = findDeletedNodeInfo(cm.DataSource, missingNodes, start, end)
-	if err != nil {
-		log.Errorf("Error fetching historical node data: %s", err.Error())
-	}
-
-	err = findDeletedPodInfo(cm.DataSource, missingContainers, start, end)
-	if err != nil {
-		log.Errorf("Error fetching historical pod data: %s", err.Error())
-	}
-	return containerNameCost, err
+	return containerNameCost, missingNodes, missingContainers, nil
 }
 
 func findUnmountedPVCostData(clusterMap clusters.ClusterMap, unmountedPVs map[string][]*PersistentVolumeClaimData, namespaceLabelsMapping map[string]map[string]string, namespaceAnnotationsMapping map[string]map[string]string) map[string]*CostData {
