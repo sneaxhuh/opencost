@@ -245,7 +245,28 @@ func (o *Oracle) ClusterManagementPricing() (string, float64, error) {
 	}
 	o.DownloadPricingDataLock.Lock()
 	defer o.DownloadPricingDataLock.Unlock()
-	// TODO: Support lookup of cluster type, as BASIC_CLUSTER types are free.
+	
+	// Determine cluster type by checking node labels
+	clusterType := "ENHANCED_CLUSTER" // default to enhanced cluster
+	nodes := o.Clientset.GetAllNodes()
+	for _, node := range nodes {
+		// Check for BASIC_CLUSTER indicator in labels
+		if _, ok := node.Labels["clusterType"]; ok && node.Labels["clusterType"] == "BASIC_CLUSTER" {
+			clusterType = "BASIC_CLUSTER"
+			break
+		}
+		// Alternative check for basic cluster labels
+		if _, ok := node.Labels["oke.oraclecloud.com/basic-cluster"]; ok {
+			clusterType = "BASIC_CLUSTER"
+			break
+		}
+	}
+	
+	// BASIC_CLUSTER types are free, so return 0.0 cost
+	if clusterType == "BASIC_CLUSTER" {
+		return managementPlatformOKE, 0.0, nil
+	}
+	
 	return managementPlatformOKE, o.RateCardStore.ForManagedCluster("ENHANCED_CLUSTER"), nil
 }
 
