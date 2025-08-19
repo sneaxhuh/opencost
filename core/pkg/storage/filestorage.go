@@ -22,6 +22,10 @@ func NewFileStorage(baseDir string) Storage {
 	return &FileStorage{baseDir}
 }
 
+func (fs *FileStorage) Name() string {
+	return fs.baseDir
+}
+
 // StorageType returns a string identifier for the type of storage used by the implementation.
 func (fs *FileStorage) StorageType() StorageType {
 	return StorageTypeFile
@@ -55,6 +59,9 @@ func (fs *FileStorage) List(path string) ([]*StorageInfo, error) {
 	// Read files in the backup path
 	entries, err := os.ReadDir(p)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return []*StorageInfo{}, nil
+		}
 		return nil, err
 	}
 	files := make([]gofs.FileInfo, 0, len(entries))
@@ -71,10 +78,12 @@ func (fs *FileStorage) List(path string) ([]*StorageInfo, error) {
 
 func (fs *FileStorage) ListDirectories(path string) ([]*StorageInfo, error) {
 	p := gopath.Join(fs.baseDir, path)
-
 	// Read files in the backup path
 	entries, err := os.ReadDir(p)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return []*StorageInfo{}, nil
+		}
 		return nil, err
 	}
 	files := make([]gofs.FileInfo, 0, len(entries))
@@ -167,6 +176,9 @@ func (fs *FileStorage) prepare(path string) (string, error) {
 func FilesToStorageInfo(fileInfo []gofs.FileInfo) []*StorageInfo {
 	var stats []*StorageInfo
 	for _, info := range fileInfo {
+		if info.IsDir() {
+			continue
+		}
 		stats = append(stats, FileToStorageInfo(info))
 	}
 	return stats
