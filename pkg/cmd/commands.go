@@ -23,8 +23,6 @@ const (
 	CommandAgent string = "agent"
 )
 
-// Execute runs the root command for the application. By default, if no command argument is provided,
-// on the command line, the cost-model is executed by default.
 //
 // This function accepts a costModelCmd and agentCmd parameters to provide support for alternate
 // implementations for cost-model and/or agent. If the passed in costModelCmd and/or agentCmd are nil,
