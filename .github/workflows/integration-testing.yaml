@@ -281,9 +281,9 @@ jobs:
         - uses: mondeja/remove-labels-gh-action@v2
           if: ${{ always()  && contains(needs.*.result, 'failure') && !cancelled()}}
           with:
-                token: ${{ secrets.GITHUB_TOKEN }}
-                labels: |
-                  integration tests passed
+            token: ${{ secrets.GITHUB_TOKEN }}
+            labels: |
+              integration tests passed
         - name: Label integration tests passing
           if: ${{ always()  && !contains(needs.*.result, 'failure') && !cancelled()}}
           uses: andymckay/labeler@1.0.4
@@ -292,6 +292,6 @@ jobs:
         - uses: mondeja/remove-labels-gh-action@v2
           if: ${{ always()  && !contains(needs.*.result, 'failure') && !cancelled()}}
           with:
-              token: ${{ secrets.GITHUB_TOKEN }}
-              labels: |
-                integration tests failed
+            token: ${{ secrets.GITHUB_TOKEN }}
+            labels: |
+              integration tests failed
