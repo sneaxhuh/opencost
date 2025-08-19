@@ -23,14 +23,11 @@ const (
 	CommandAgent string = "agent"
 )
 
-// Execute runs the root command for the application. By default, if no command argument is provided,
-// on the command line, the cost-model is executed by default.
 //
 // This function accepts a costModelCmd and agentCmd parameters to provide support for alternate
 // implementations for cost-model and/or agent. If the passed in costModelCmd and/or agentCmd are nil,
 // then the respective defaults from opencost will be used.
 //
-// Any additional commands passed in will be added to the root command.
 func Execute(costModelCmd *cobra.Command, cmds ...*cobra.Command) error {
 	// use the open-source cost-model if a command is not provided
 	if costModelCmd == nil {
