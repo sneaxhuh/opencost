@@ -30,7 +30,6 @@ const (
 // implementations for cost-model and/or agent. If the passed in costModelCmd and/or agentCmd are nil,
 // then the respective defaults from opencost will be used.
 //
-// Any additional commands passed in will be added to the root command.
 func Execute(costModelCmd *cobra.Command, cmds ...*cobra.Command) error {
 	// use the open-source cost-model if a command is not provided
 	if costModelCmd == nil {
