@@ -21,19 +21,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: ./
-      -
-        name: Install Go
+      - name: Install Go
         uses: actions/setup-go@v5
         with:
           go-version: 'stable'
 
-      -
-        name: Install protoc
+      - name: Install protoc
         uses: arduino/setup-protoc@v3
         with:
           version: '25.3'
-      -
-        name: Install just
+      - name: Install just
         uses: extractions/setup-just@v3
 
       - name: install protobuf-go
@@ -41,8 +38,7 @@ jobs:
           go install github.com/golang/protobuf/protoc-gen-go@latest
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.3.0
           which protoc-gen-go-grpc
-      -
-        name: Validate
+      - name: Validate
         run: |
           just validate-protobuf
   backend:
@@ -52,12 +48,10 @@ jobs:
         with:
           path: ./
 
-      -
-        name: Install just
+      - name: Install just
         uses: extractions/setup-just@v3
 
-      -
-        name: Install Go
+      - name: Install Go
         uses: actions/setup-go@v5
         with:
           go-version: 'stable'
@@ -71,13 +65,11 @@ jobs:
             ~/go/pkg/mod
           key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
 
-      -
-        name: Test
+      - name: Test
         run: |
           just test
 
-      -
-        name: Build
+      - name: Build
         run: |
           just build-local
       - name: get-pr-info
