@@ -6,21 +6,23 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/julienschmidt/httprouter"
+	"github.com/opencost/opencost/core/pkg/log"
 	"github.com/opencost/opencost/core/pkg/util/apiutil"
+	"github.com/opencost/opencost/core/pkg/version"
 	"github.com/opencost/opencost/pkg/cloud/models"
 	"github.com/opencost/opencost/pkg/cloud/provider"
+	"github.com/opencost/opencost/pkg/cloudcost"
+	"github.com/opencost/opencost/pkg/costmodel"
 	"github.com/opencost/opencost/pkg/customcost"
+	"github.com/opencost/opencost/pkg/env"
+	"github.com/opencost/opencost/pkg/filemanager"
+	"github.com/opencost/opencost/pkg/metrics"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
 
 	"github.com/opencost/opencost/core/pkg/errors"
-	"github.com/opencost/opencost/core/pkg/log"
-	"github.com/opencost/opencost/core/pkg/version"
-	"github.com/opencost/opencost/pkg/costmodel"
-	"github.com/opencost/opencost/pkg/env"
-	"github.com/opencost/opencost/pkg/filemanager"
-	"github.com/opencost/opencost/pkg/metrics"
 )
 
 func Execute(conf *Config) error {
@@ -52,12 +54,16 @@ func Execute(conf *Config) error {
 		cp = a.CloudProvider
 	}
 
+	var cloudCostIntegration cloudcost.CloudCostIntegration
 	if conf.CloudCostEnabled {
 		var providerConfig models.ProviderConfig
 		if cp != nil {
 			providerConfig = provider.ExtractConfigFromProviders(cp)
 		}
+		// InitializeCloudCost doesn't return an integration, so we'll create a default one
 		costmodel.InitializeCloudCost(router, providerConfig)
+		// For now, we'll set a nil integration
+		cloudCostIntegration = nil
 	}
 
 	var customCostPipelineService *customcost.PipelineService
@@ -68,6 +74,19 @@ func Execute(conf *Config) error {
 	// this endpoint is intentionally left out of the "if env.IsCustomCostEnabled()" conditional; in the handler, it is
 	// valid for CustomCostPipelineService to be nil
 	router.GET("/customCost/status", customCostPipelineService.GetCustomCostStatusHandler())
+
+	// --- MCP Server Integration ---
+	if a != nil && a.Model != nil && a.CloudProvider != nil {
+		log.Info("Setting up MCP Server")
+		mcpGin := gin.Default()
+		mcpStore := NewInMemorySessionStore()
+		mcpServer := NewMCPServer(mcpStore, a.Model, a.CloudProvider, cloudCostIntegration)
+		mcpServer.RegisterMCPEndpoints(mcpGin)
+		router.Handler(http.MethodPost, "/mcp/v1/query", mcpGin)
+	} else {
+		log.Info("Skipping MCP Server setup due to missing kubernetes-enabled dependency.")
+	}
+	// --- End MCP Server Integration ---
 
 	apiutil.ApplyContainerDiagnosticEndpoints(router)
 
@@ -102,7 +121,6 @@ func StartExportWorker(ctx context.Context, model costmodel.AllocationModel) err
 			case <-time.After(nextRunAt.Sub(time.Now())):
 				err := costmodel.UpdateCSV(ctx, fm, model, env.GetExportCSVLabelsAll(), env.GetExportCSVLabelsList())
 				if err != nil {
-					// it's background worker, log error and carry on, maybe next time it will work
 					log.Errorf("Error updating CSV: %s", err)
 				}
 				now := time.Now().UTC()

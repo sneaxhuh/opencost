@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "opencost": {
+      "command": "/home/sneax/opencost/mcp-server",
+      "args": ["serve"],
+      "env": {
+        "PROMETHEUS_SERVER_ENDPOINT": "http://localhost:9091"
+      }
+    }
+  }
+}
