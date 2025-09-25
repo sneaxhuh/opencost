@@ -287,18 +287,8 @@ func (s *scanner) scanToken() {
 //
 // This has been updated to support UTF-8 characters for cluster IDs.
 func isIdentifierChar(r rune) bool {
-	// For ASCII characters, maintain the original logic
-	if r <= 127 {
-		b := byte(r)
-		return (b >= '0' && b <= '9') || // 0-9
-			(b >= 'A' && b <= 'Z') || // A-Z
-			(b >= 'a' && b <= 'z') || // a-z
-			b == '-' || // hyphens are allowed according to K8s spec
-			b == '_' // underscores are allowed because of Prometheus sanitization
-	}
-	
-	// For Unicode characters, allow letters and numbers
-	return unicode.IsLetter(r) || unicode.IsDigit(r)
+	// Allow letters, digits, hyphens, and underscores.
+	return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_'
 }
 
 func (s *scanner) string() {
