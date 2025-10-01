@@ -140,16 +140,33 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 	mq := ds.Metrics()
 
 	// Get Kubernetes data
+	// Pull pod information from k8s API
+	podlist := cm.Cache.GetAllPods()
 
-	podlist, podDeploymentsMapping, podServicesMapping, namespaceLabelsMapping, namespaceAnnotationsMapping, err := getKubeCostData(cm.Cache, clusterID)
+	podDeploymentsMapping, err := getPodDeployments(cm.Cache, podlist, clusterID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Get Prometheus data
-	resRAMUsage, resCPUUsage, resNetZoneRequests, resNetRegionRequests, resNetInternetRequests, err := getPrometheusData(mq, start, end)
+	podServicesMapping, err := getPodServices(cm.Cache, podlist, clusterID)
 	if err != nil {
-		log.Warnf("ComputeCostData: continuing despite prometheus errors: %s", err)
+		return nil, err
+	}
+
+	namespaceLabelsMapping, err := getNamespaceLabels(cm.Cache, clusterID)
+	if err != nil {
+		return nil, err
+	}
+
+	namespaceAnnotationsMapping, err := getNamespaceAnnotations(cm.Cache, clusterID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get metrics data
+	resRAMUsage, resCPUUsage, resNetZoneRequests, resNetRegionRequests, resNetInternetRequests, err := queryMetrics(mq, start, end)
+	if err != nil {
+		log.Warnf("ComputeCostData: continuing despite metrics errors: %s", err)
 	}
 
 	defer measureTime(time.Now(), profileThreshold, "ComputeCostData: Processing Query Data")
@@ -183,112 +200,19 @@ func (cm *CostModel) ComputeCostData(start, end time.Time) (map[string]*CostData
 		networkUsageMap = make(map[string]*NetworkUsageData)
 	}
 
-	containerNameCost, missingNodes, missingContainers, err := getContainerCostData(podlist, resRAMUsage, resCPUUsage, pvClaimMapping, unmountedPVs, networkUsageMap, podDeploymentsMapping, podServicesMapping, namespaceLabelsMapping, namespaceAnnotationsMapping, nodes, cm.ClusterMap, cp, clusterID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Use unmounted pvs to create a mapping of "Unmounted-<Namespace>" containers
-	// to pass along the cost data
-	unmounted := findUnmountedPVCostData(cm.ClusterMap, unmountedPVs, namespaceLabelsMapping, namespaceAnnotationsMapping)
-	for k, costs := range unmounted {
-		log.Debugf("Unmounted PVs in Namespace/ClusterID: %s/%s", costs.Namespace, costs.ClusterID)
-
-		containerNameCost[k] = costs
-	}
-
-	err = findDeletedNodeInfo(cm.DataSource, missingNodes, start, end)
-	if err != nil {
-		log.Errorf("Error fetching historical node data: %s", err.Error())
-	}
-
-	err = findDeletedPodInfo(cm.DataSource, missingContainers, start, end)
-	if err != nil {
-		log.Errorf("Error fetching historical pod data: %s", err.Error())
-	}
-	return containerNameCost, err
-}
-
-func getKubeCostData(cache clustercache.ClusterCache, clusterID string) ([]*clustercache.Pod, map[string]map[string][]string, map[string]map[string][]string, map[string]map[string]string, map[string]map[string]string, error) {
-	// Pull pod information from k8s API
-
-	podlist := cache.GetAllPods()
-
-	podDeploymentsMapping, err := getPodDeployments(cache, podlist, clusterID)
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
-
-	podServicesMapping, err := getPodServices(cache, podlist, clusterID)
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
-
-	namespaceLabelsMapping, err := getNamespaceLabels(cache, clusterID)
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
-
-	namespaceAnnotationsMapping, err := getNamespaceAnnotations(cache, clusterID)
-	if err != nil {
-		return nil, nil, nil, nil, nil, err
-	}
-
-	return podlist, podDeploymentsMapping, podServicesMapping, namespaceLabelsMapping, namespaceAnnotationsMapping, nil
-}
-
-func getPrometheusData(mq source.MetricsQuerier, start, end time.Time) ([]*source.ContainerMetricResult, []*source.ContainerMetricResult, []*source.NetZoneGiBResult, []*source.NetRegionGiBResult, []*source.NetInternetGiBResult, error) {
-	grp := source.NewQueryGroup()
-
-	resChRAMUsage := source.WithGroup(grp, mq.QueryRAMUsageAvg(start, end))
-	resChCPUUsage := source.WithGroup(grp, mq.QueryCPUUsageAvg(start, end))
-	resChNetZoneRequests := source.WithGroup(grp, mq.QueryNetZoneGiB(start, end))
-	resChNetRegionRequests := source.WithGroup(grp, mq.QueryNetRegionGiB(start, end))
-	resChNetInternetRequests := source.WithGroup(grp, mq.QueryNetInternetGiB(start, end))
-
-	// Process Prometheus query results. Handle errors using ctx.Errors.
-	resRAMUsage, _ := resChRAMUsage.Await()
-	resCPUUsage, _ := resChCPUUsage.Await()
-	resNetZoneRequests, _ := resChNetZoneRequests.Await()
-	resNetRegionRequests, _ := resChNetRegionRequests.Await()
-	resNetInternetRequests, _ := resChNetInternetRequests.Await()
-
-	// NOTE: The way we currently handle errors and warnings only early returns if there is an error. Warnings
-	// NOTE: will not propagate unless coupled with errors.
-	if grp.HasErrors() {
-		// To keep the context of where the errors are occurring, we log the errors here and pass them the error
-		// back to the caller. The caller should handle the specific case where error is an ErrorCollection
-		for _, queryErr := range grp.Errors() {
-			if queryErr.Error != nil {
-				log.Errorf("ComputeCostData: Request Error: %s", queryErr.Error)
-			}
-			if queryErr.ParseError != nil {
-				log.Errorf("ComputeCostData: Parsing Error: %s", queryErr.ParseError)
-			}
-		}
-
-		// ErrorCollection is an collection of errors wrapped in a single error implementation
-		// We opt to not return an error for the sake of running as a pure exporter.
-		return resRAMUsage, resCPUUsage, resNetZoneRequests, resNetRegionRequests, resNetInternetRequests, grp.Error()
-	}
-
-	return resRAMUsage, resCPUUsage, resNetZoneRequests, resNetRegionRequests, resNetInternetRequests, nil
-}
-
-func getContainerCostData(podlist []*clustercache.Pod, resRAMUsage, resCPUUsage []*source.ContainerMetricResult, pvClaimMapping map[string]*PersistentVolumeClaimData, unmountedPVs map[string][]*PersistentVolumeClaimData, networkUsageMap map[string]*NetworkUsageData, podDeploymentsMapping, podServicesMapping map[string]map[string][]string, namespaceLabelsMapping, namespaceAnnotationsMapping map[string]map[string]string, nodes map[string]*costAnalyzerCloud.Node, clusterMap clusters.ClusterMap, cp costAnalyzerCloud.Provider, clusterID string) (map[string]*CostData, map[string]*costAnalyzerCloud.Node, map[string]*CostData, error) {
 	containerNameCost := make(map[string]*CostData)
 	containers := make(map[string]bool)
 
 	RAMUsedMap, err := GetContainerMetricVector(resRAMUsage, clusterID)
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	for key := range RAMUsedMap {
 		containers[key] = true
 	}
 	CPUUsedMap, err := GetContainerMetricVector(resCPUUsage, clusterID) // No need to normalize here, as this comes from a counter
 	if err != nil {
-		return nil, nil, nil, err
+		return nil, err
 	}
 	for key := range CPUUsedMap {
 		containers[key] = true
@@ -300,10 +224,10 @@ func getContainerCostData(podlist []*clustercache.Pod, resRAMUsage, resCPUUsage 
 		}
 		cs, err := NewContainerMetricsFromPod(pod, clusterID)
 		if err != nil {
-			return nil, nil, nil, err
+			return nil, err
 		}
 		for _, c := range cs {
-			containers[c.Key()] = true // captures any containers that existed for a time < a prometheus scrape interval. We currently charge 0 for this but should charge something.
+			containers[c.Key()] = true // captures any containers that existed for a time < a metrics scrape interval. We currently charge 0 for this but should charge something.
 			currentContainers[c.Key()] = *pod
 		}
 	}
@@ -411,7 +335,7 @@ func getContainerCostData(podlist []*clustercache.Pod, resRAMUsage, resCPUUsage 
 				ramRequestBytes := container.Resources.Requests.Memory().Value()
 
 				// Because information on container RAM & CPU requests isn't
-				// coming from Prometheus, it won't have a timestamp associated
+				// coming from metrics, it won't have a timestamp associated
 				// with it. We need to provide a timestamp.
 				RAMReqV := []*util.Vector{
 					{
@@ -487,7 +411,7 @@ func getContainerCostData(podlist []*clustercache.Pod, resRAMUsage, resCPUUsage 
 					Labels:          podLabels,
 					NamespaceLabels: nsLabels,
 					ClusterID:       clusterID,
-					ClusterName:     clusterMap.NameFor(clusterID),
+					ClusterName:     cm.ClusterMap.NameFor(clusterID),
 				}
 
 				var cpuReq, cpuUse *util.Vector
@@ -511,11 +435,11 @@ func getContainerCostData(podlist []*clustercache.Pod, resRAMUsage, resCPUUsage 
 				containerNameCost[newKey] = costs
 			}
 		} else {
-			// The container has been deleted. Not all information is sent to prometheus via ksm, so fill out what we can without k8s api
+			// The container has been deleted. Not all information is sent to metrics via ksm, so fill out what we can without k8s api
 			log.Debug("The container " + key + " has been deleted. Calculating allocation but resulting object will be missing data.")
 			c, err := NewContainerMetricFromKey(key)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, err
 			}
 
 			// CPU and RAM requests are obtained from the Kubernetes API.
@@ -568,7 +492,7 @@ func getContainerCostData(podlist []*clustercache.Pod, resRAMUsage, resCPUUsage 
 				Annotations:     namespaceAnnotations,
 				NamespaceLabels: namespacelabels,
 				ClusterID:       c.ClusterID,
-				ClusterName:     clusterMap.NameFor(c.ClusterID),
+				ClusterName:     cm.ClusterMap.NameFor(c.ClusterID),
 			}
 
 			var cpuReq, cpuUse *util.Vector
@@ -593,7 +517,64 @@ func getContainerCostData(podlist []*clustercache.Pod, resRAMUsage, resCPUUsage 
 			missingContainers[key] = costs
 		}
 	}
-	return containerNameCost, missingNodes, missingContainers, nil
+
+	// Use unmounted pvs to create a mapping of "Unmounted-<Namespace>" containers
+	// to pass along the cost data
+	unmounted := findUnmountedPVCostData(cm.ClusterMap, unmountedPVs, namespaceLabelsMapping, namespaceAnnotationsMapping)
+	for k, costs := range unmounted {
+		log.Debugf("Unmounted PVs in Namespace/ClusterID: %s/%s", costs.Namespace, costs.ClusterID)
+
+		containerNameCost[k] = costs
+	}
+
+	err = findDeletedNodeInfo(cm.DataSource, missingNodes, start, end)
+	if err != nil {
+		log.Errorf("Error fetching historical node data: %s", err.Error())
+	}
+
+	err = findDeletedPodInfo(cm.DataSource, missingContainers, start, end)
+	if err != nil {
+		log.Errorf("Error fetching historical pod data: %s", err.Error())
+	}
+	return containerNameCost, err
+}
+
+func queryMetrics(mq source.MetricsQuerier, start, end time.Time) ([]*source.ContainerMetricResult, []*source.ContainerMetricResult, []*source.NetZoneGiBResult, []*source.NetRegionGiBResult, []*source.NetInternetGiBResult, error) {
+	grp := source.NewQueryGroup()
+
+	resChRAMUsage := source.WithGroup(grp, mq.QueryRAMUsageAvg(start, end))
+	resChCPUUsage := source.WithGroup(grp, mq.QueryCPUUsageAvg(start, end))
+	resChNetZoneRequests := source.WithGroup(grp, mq.QueryNetZoneGiB(start, end))
+	resChNetRegionRequests := source.WithGroup(grp, mq.QueryNetRegionGiB(start, end))
+	resChNetInternetRequests := source.WithGroup(grp, mq.QueryNetInternetGiB(start, end))
+
+	// Process metrics query results. Handle errors using ctx.Errors.
+	resRAMUsage, _ := resChRAMUsage.Await()
+	resCPUUsage, _ := resChCPUUsage.Await()
+	resNetZoneRequests, _ := resChNetZoneRequests.Await()
+	resNetRegionRequests, _ := resChNetRegionRequests.Await()
+	resNetInternetRequests, _ := resChNetInternetRequests.Await()
+
+	// NOTE: The way we currently handle errors and warnings only early returns if there is an error. Warnings
+	// NOTE: will not propagate unless coupled with errors.
+	if grp.HasErrors() {
+		// To keep the context of where the errors are occurring, we log the errors here and pass them the error
+		// back to the caller. The caller should handle the specific case where error is an ErrorCollection
+		for _, queryErr := range grp.Errors() {
+			if queryErr.Error != nil {
+				log.Errorf("ComputeCostData: Request Error: %s", queryErr.Error)
+			}
+			if queryErr.ParseError != nil {
+				log.Errorf("ComputeCostData: Parsing Error: %s", queryErr.ParseError)
+			}
+		}
+
+		// ErrorCollection is an collection of errors wrapped in a single error implementation
+		// We opt to not return an error for the sake of running as a pure exporter.
+		return resRAMUsage, resCPUUsage, resNetZoneRequests, resNetRegionRequests, resNetInternetRequests, grp.Error()
+	}
+
+	return resRAMUsage, resCPUUsage, resNetZoneRequests, resNetRegionRequests, resNetInternetRequests, nil
 }
 
 func findUnmountedPVCostData(clusterMap clusters.ClusterMap, unmountedPVs map[string][]*PersistentVolumeClaimData, namespaceLabelsMapping map[string]map[string]string, namespaceAnnotationsMapping map[string]map[string]string) map[string]*CostData {
@@ -705,14 +686,14 @@ func findDeletedNodeInfo(dataSource source.OpenCostDataSource, missingNodes map[
 		}
 
 		if len(cpuCosts) == 0 {
-			log.Infof("Kubecost prometheus metrics not currently available. Ingest this server's /metrics endpoint to get that data.")
+			log.Infof("Kubecost metrics not currently available. Ingest this server's /metrics endpoint to get that data.")
 		}
 
 		for node, costv := range cpuCosts {
 			if _, ok := missingNodes[node]; ok {
 				missingNodes[node].VCPUCost = fmt.Sprintf("%f", costv[0].Value)
 			} else {
-				log.DedupedWarningf(5, "Node `%s` in prometheus but not k8s api", node)
+				log.DedupedWarningf(5, "Node `%s` in metrics but not k8s api", node)
 			}
 		}
 		for node, costv := range ramCosts {
