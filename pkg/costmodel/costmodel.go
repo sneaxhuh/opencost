@@ -686,7 +686,7 @@ func findDeletedNodeInfo(dataSource source.OpenCostDataSource, missingNodes map[
 		}
 
 		if len(cpuCosts) == 0 {
-			log.Infof("Kubecost metrics not currently available. Ingest this server's /metrics endpoint to get that data.")
+			log.Infof("Opencost metrics not currently available. Ingest this server's /metrics endpoint to get that data.")
 		}
 
 		for node, costv := range cpuCosts {
