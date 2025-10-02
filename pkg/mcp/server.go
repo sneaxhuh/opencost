@@ -1,16 +1,17 @@
 package mcp
 
 import (
+	"time"
+	models "github.com/opencost/opencost/pkg/cloud/models"
+	"github.com/opencost/opencost/pkg/cloudcost"
+	"github.com/opencost/opencost/pkg/costmodel"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"strings"
-	"time"
-
 	"github.com/go-playground/validator/v10"
 	"github.com/opencost/opencost/core/pkg/opencost"
-	models "github.com/opencost/opencost/pkg/cloud/models"
-	"github.com/opencost/opencost/pkg/costmodel"
+	
 )
 
 // QueryType defines the type of query to be executed.
@@ -19,6 +20,7 @@ type QueryType string
 const (
 	AllocationQueryType QueryType = "allocation"
 	AssetQueryType      QueryType = "asset"
+	CloudCostQueryType  QueryType = "cloudcost"
 )
 
 // MCPRequest represents a single turn in a conversation with the OpenCost MCP server.
@@ -49,12 +51,13 @@ type DataSummary struct {
 
 // OpenCostQueryRequest provides a unified interface for all OpenCost query types.
 type OpenCostQueryRequest struct {
-	QueryType QueryType `json:"queryType" validate:"required,oneof=allocation asset"`
+	QueryType QueryType `json:"queryType" validate:"required,oneof=allocation asset cloudcost"`
 
 	Window string `json:"window" validate:"required"`
 
 	AllocationParams *AllocationQuery `json:"allocationParams,omitempty"`
 	AssetParams      *AssetQuery      `json:"assetParams,omitempty"`
+	CloudCostParams  *CloudCostQuery  `json:"cloudCostParams,omitempty"`
 }
 
 // AllocationQuery contains the parameters for an allocation query.
@@ -299,6 +302,7 @@ type CostMetric struct {
 type MCPServer struct {
 	costModel *costmodel.CostModel
 	provider  models.Provider
+	integration cloudcost.CloudCostIntegration
 }
 
 // NewMCPServer creates a new MCP Server.
