@@ -1,10 +1,17 @@
 package mcp
 
 import (
+	"fmt"
+	"strings"
 	"time"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/opencost/opencost/core/pkg/opencost"
 	models "github.com/opencost/opencost/pkg/cloud/models"
 	"github.com/opencost/opencost/pkg/cloudcost"
 	"github.com/opencost/opencost/pkg/costmodel"
+	"crypto/rand"
+	"encoding/hex"
 )
 
 // QueryType defines the type of query to be executed.
@@ -186,6 +193,13 @@ type Asset struct {
 
 	// Overhead (Node-specific)
 	Overhead *NodeOverhead `json:"overhead,omitempty"`
+
+	// LoadBalancer-specific fields
+	Private bool   `json:"private,omitempty"`
+	Ip      string `json:"ip,omitempty"`
+
+	// Cloud-specific fields
+	Credit float64 `json:"credit,omitempty"`
 }
 
 // NodeOverhead represents node overhead information
@@ -289,4 +303,532 @@ type MCPServer struct {
 	costModel   *costmodel.CostModel
 	provider    models.Provider
 	integration cloudcost.CloudCostIntegration
+}
+
+// NewMCPServer creates a new MCP Server.
+func NewMCPServer(costModel *costmodel.CostModel, provider models.Provider, integration cloudcost.CloudCostIntegration) *MCPServer {
+	return &MCPServer{
+		costModel:   costModel,
+		provider:    provider,
+		integration: integration,
+	}
+}
+
+// ProcessMCPRequest processes an MCP request and returns an MCP response.
+
+func (s *MCPServer) summarizeAllocationData(request *OpenCostQueryRequest, resp *AllocationResponse) *DataSummary {
+	// Basic summary implementation
+	var totalCost float64
+	for _, allocationSet := range resp.Allocations {
+		totalCost += allocationSet.TotalCost()
+	}
+
+	return &DataSummary{
+		Title:   fmt.Sprintf("Total Cost Over '%s'", request.Window),
+		Content: fmt.Sprintf("The total cost for the selected window is $%.2f.", totalCost),
+	}
+}
+
+func (s *MCPServer) ProcessMCPRequest(request *MCPRequest) (*MCPResponse, error) {
+	// 1. Validate Request
+	if err := validate.Struct(request); err != nil {
+		return nil, fmt.Errorf("validation failed: %w", err)
+	}
+
+	// 3. Query Dispatching
+	var data interface{}
+	var err error
+	var summary *DataSummary
+
+	queryStart := time.Now()
+
+	switch request.Query.QueryType {
+	case AllocationQueryType:
+		allocationResponse, err := s.QueryAllocations(request.Query)
+		if err != nil {
+			return nil, err // Propagate error
+		}
+		data = allocationResponse
+
+		summary = s.summarizeAllocationData(request.Query, allocationResponse)
+	case AssetQueryType:
+		data, err = s.QueryAssets(request.Query)
+	case CloudCostQueryType:
+		data, err = s.QueryCloudCosts(request.Query)
+	default:
+		return nil, fmt.Errorf("unsupported query type: %s", request.Query.QueryType)
+	}
+
+	if err != nil {
+		// Handle error appropriately, maybe return a JSON-RPC error response
+		return nil, err
+	}
+
+	processingTime := time.Since(queryStart)
+
+	// 5. Construct Final Response
+	mcpResponse := &MCPResponse{
+		Data: data,
+		QueryInfo: QueryMetadata{
+			QueryID:        generateQueryID(),
+			Timestamp:      time.Now(),
+			ProcessingTime: processingTime,
+		},
+		Summary: summary,
+	}
+	return mcpResponse, nil
+}
+
+// validate is the singleton validator instance.
+var validate = validator.New()
+
+func generateQueryID() string {
+	bytes := make([]byte, 8) // 16 hex characters
+	if _, err := rand.Read(bytes); err != nil {
+		// Fallback to timestamp-based ID if crypto/rand fails
+		return fmt.Sprintf("query-%d", time.Now().UnixNano())
+	}
+	return fmt.Sprintf("query-%s", hex.EncodeToString(bytes))
+}
+
+func (s *MCPServer) QueryAllocations(query *OpenCostQueryRequest) (*AllocationResponse, error) {
+	// 1. Parse Window
+	window, err := opencost.ParseWindowWithOffset(query.Window, 0) // 0 offset for UTC
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse window '%s': %w", query.Window, err)
+	}
+
+	// 2. Set default parameters
+	var step time.Duration
+	var aggregateBy []string
+	var includeIdle, idleByNode, includeProportionalAssetResourceCosts, includeAggregatedMetadata, sharedLoadBalancer, shareIdle bool
+	var accumulateBy opencost.AccumulateOption
+
+	// 3. Parse allocation parameters if provided
+	if query.AllocationParams != nil {
+		// Set step duration (default to window duration if not specified)
+		if query.AllocationParams.Step > 0 {
+			step = query.AllocationParams.Step
+		} else {
+			step = window.Duration()
+		}
+
+		// Parse aggregation properties
+		if query.AllocationParams.Aggregate != "" {
+			aggregateBy = strings.Split(query.AllocationParams.Aggregate, ",")
+		}
+
+		// Set boolean parameters
+		includeIdle = query.AllocationParams.IncludeIdle
+		idleByNode = query.AllocationParams.IdleByNode
+		includeProportionalAssetResourceCosts = query.AllocationParams.IncludeProportionalAssetResourceCosts
+		includeAggregatedMetadata = query.AllocationParams.IncludeAggregatedMetadata
+		sharedLoadBalancer = query.AllocationParams.ShareLB
+		shareIdle = query.AllocationParams.ShareIdle
+
+		// Set accumulation option
+		if query.AllocationParams.Accumulate {
+			accumulateBy = opencost.AccumulateOptionAll
+		} else {
+			accumulateBy = opencost.AccumulateOptionNone
+		}
+	} else {
+		// Default values when no parameters provided
+		step = window.Duration()
+		accumulateBy = opencost.AccumulateOptionNone
+	}
+
+	// 4. Call the existing QueryAllocation function with all parameters
+	asr, err := s.costModel.QueryAllocation(
+		window,
+		step,
+		aggregateBy,
+		includeIdle,
+		idleByNode,
+		includeProportionalAssetResourceCosts,
+		includeAggregatedMetadata,
+		sharedLoadBalancer,
+		accumulateBy,
+		shareIdle,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query allocations: %w", err)
+	}
+
+	// 5. Handle the AllocationSetRange result
+	if asr == nil || len(asr.Allocations) == 0 {
+		return &AllocationResponse{
+			Allocations: make(map[string]*AllocationSet),
+		}, nil
+	}
+
+	// 6. Transform the result to MCP format
+	// If we have multiple sets, we'll combine them or return the first one
+	// For now, let's return the first allocation set
+	firstSet := asr.Allocations[0]
+	return transformAllocationSet(firstSet), nil
+}
+
+// transformAllocationSet converts an opencost.AllocationSet into the MCP's AllocationResponse format.
+func transformAllocationSet(allocSet *opencost.AllocationSet) *AllocationResponse {
+	if allocSet == nil {
+		return &AllocationResponse{Allocations: make(map[string]*AllocationSet)}
+	}
+
+	mcpAllocations := make(map[string]*AllocationSet)
+
+	// Create a single set for all allocations
+	mcpSet := &AllocationSet{
+		Name:        "allocations",
+		Allocations: []*Allocation{},
+	}
+
+	// Convert each allocation
+	for _, alloc := range allocSet.Allocations {
+		if alloc == nil {
+			continue
+		}
+
+		mcpAlloc := &Allocation{
+			Name:         alloc.Name,
+			CPUCost:      alloc.CPUCost,
+			GPUCost:      alloc.GPUCost,
+			RAMCost:      alloc.RAMCost,
+			PVCost:       alloc.PVCost(), // Call the method
+			NetworkCost:  alloc.NetworkCost,
+			SharedCost:   alloc.SharedCost,
+			ExternalCost: alloc.ExternalCost,
+			TotalCost:    alloc.TotalCost(),
+			CPUCoreHours: alloc.CPUCoreHours,
+			RAMByteHours: alloc.RAMByteHours,
+			GPUHours:     alloc.GPUHours,
+			PVByteHours:  alloc.PVBytes(), // Use the method directly
+			Start:        alloc.Start,
+			End:          alloc.End,
+		}
+		mcpSet.Allocations = append(mcpSet.Allocations, mcpAlloc)
+	}
+
+	mcpAllocations["allocations"] = mcpSet
+
+	return &AllocationResponse{
+		Allocations: mcpAllocations,
+	}
+}
+
+func (s *MCPServer) QueryAssets(query *OpenCostQueryRequest) (*AssetResponse, error) {
+	// 1. Parse Window
+	window, err := opencost.ParseWindowWithOffset(query.Window, 0) // 0 offset for UTC
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse window '%s': %w", query.Window, err)
+	}
+
+	// 2. Set Query Options
+	start := *window.Start()
+	end := *window.End()
+
+	// 3. Call CostModel to get the asset set
+	assetSet, err := s.costModel.ComputeAssets(start, end)
+	if err != nil {
+		return nil, fmt.Errorf("failed to compute assets: %w", err)
+	}
+
+	// 4. Transform Response for the MCP API
+	return transformAssetSet(assetSet), nil
+}
+
+// transformAssetSet converts a opencost.AssetSet into the MCP's AssetResponse format.
+func transformAssetSet(assetSet *opencost.AssetSet) *AssetResponse {
+	if assetSet == nil {
+		return &AssetResponse{Assets: make(map[string]*AssetSet)}
+	}
+
+	mcpAssets := make(map[string]*AssetSet)
+
+	// Create a single set for all assets
+	mcpSet := &AssetSet{
+		Name:   "assets",
+		Assets: []*Asset{},
+	}
+
+	for _, asset := range assetSet.Assets {
+		if asset == nil {
+			continue
+		}
+
+		properties := asset.GetProperties()
+		labels := asset.GetLabels()
+
+		mcpAsset := &Asset{
+			Type: asset.Type().String(),
+			Properties: AssetProperties{
+				Category:   properties.Category,
+				Provider:   properties.Provider,
+				Account:    properties.Account,
+				Project:    properties.Project,
+				Service:    properties.Service,
+				Cluster:    properties.Cluster,
+				Name:       properties.Name,
+				ProviderID: properties.ProviderID,
+			},
+			Labels:     labels,
+			Start:      asset.GetStart(),
+			End:        asset.GetEnd(),
+			Minutes:    asset.Minutes(),
+			Adjustment: asset.GetAdjustment(),
+			TotalCost:  asset.TotalCost(),
+		}
+
+		// Handle type-specific fields
+		switch a := asset.(type) {
+		case *opencost.Disk:
+			mcpAsset.ByteHours = a.ByteHours
+			mcpAsset.ByteHoursUsed = a.ByteHoursUsed
+			mcpAsset.ByteUsageMax = a.ByteUsageMax
+			mcpAsset.StorageClass = a.StorageClass
+			mcpAsset.VolumeName = a.VolumeName
+			mcpAsset.ClaimName = a.ClaimName
+			mcpAsset.ClaimNamespace = a.ClaimNamespace
+			mcpAsset.Local = a.Local
+			if a.Breakdown != nil {
+				mcpAsset.Breakdown = &AssetBreakdown{
+					Idle:   a.Breakdown.Idle,
+					Other:  a.Breakdown.Other,
+					System: a.Breakdown.System,
+					User:   a.Breakdown.User,
+				}
+			}
+		case *opencost.Node:
+			mcpAsset.NodeType = a.NodeType
+			mcpAsset.CPUCoreHours = a.CPUCoreHours
+			mcpAsset.RAMByteHours = a.RAMByteHours
+			mcpAsset.GPUHours = a.GPUHours
+			mcpAsset.GPUCount = a.GPUCount
+			mcpAsset.CPUCost = a.CPUCost
+			mcpAsset.GPUCost = a.GPUCost
+			mcpAsset.RAMCost = a.RAMCost
+			mcpAsset.Discount = a.Discount
+			mcpAsset.Preemptible = a.Preemptible
+			if a.CPUBreakdown != nil {
+				mcpAsset.CPUBreakdown = &AssetBreakdown{
+					Idle:   a.CPUBreakdown.Idle,
+					Other:  a.CPUBreakdown.Other,
+					System: a.CPUBreakdown.System,
+					User:   a.CPUBreakdown.User,
+				}
+			}
+			if a.RAMBreakdown != nil {
+				mcpAsset.RAMBreakdown = &AssetBreakdown{
+					Idle:   a.RAMBreakdown.Idle,
+					Other:  a.RAMBreakdown.Other,
+					System: a.RAMBreakdown.System,
+					User:   a.RAMBreakdown.User,
+				}
+			}
+			if a.Overhead != nil {
+				mcpAsset.Overhead = &NodeOverhead{
+					RamOverheadFraction:  a.Overhead.RamOverheadFraction,
+					CpuOverheadFraction:  a.Overhead.CpuOverheadFraction,
+					OverheadCostFraction: a.Overhead.OverheadCostFraction,
+				}
+			}
+		case *opencost.LoadBalancer:
+			mcpAsset.Private = a.Private
+			mcpAsset.Ip = a.Ip
+		case *opencost.Network:
+			// Network assets have no specific fields beyond the base asset structure
+			// All relevant data is in Properties, Labels, Cost, etc.
+		case *opencost.Cloud:
+			mcpAsset.Credit = a.Credit
+		case *opencost.ClusterManagement:
+			// ClusterManagement assets have no specific fields beyond the base asset structure
+			// All relevant data is in Properties, Labels, Cost, etc.
+		}
+
+		mcpSet.Assets = append(mcpSet.Assets, mcpAsset)
+	}
+
+	mcpAssets["assets"] = mcpSet
+
+	return &AssetResponse{
+		Assets: mcpAssets,
+	}
+}
+
+// QueryCloudCosts translates an MCP query into a CloudCost integration query and transforms the result.
+func (s *MCPServer) QueryCloudCosts(query *OpenCostQueryRequest) (*CloudCostResponse, error) {
+	// 1. Check if cloud cost integration is available
+	if s.integration == nil {
+		return nil, fmt.Errorf("cloud cost integration not configured - check cloud-integration.json file")
+	}
+
+	// 2. Check integration status
+	status := s.integration.GetStatus()
+	if status != "Ready" {
+		return nil, fmt.Errorf("cloud cost integration not ready: %s", status)
+	}
+
+	// 3. Parse Window
+	window, err := opencost.ParseWindowWithOffset(query.Window, 0) // 0 offset for UTC
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse window '%s': %w", query.Window, err)
+	}
+
+	// 4. Call the cloud cost integration
+	ccsr, err := s.integration.GetCloudCost(*window.Start(), *window.End())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get cloud costs: %w", err)
+	}
+
+	// 5. Apply aggregation and filtering if specified
+	if query.CloudCostParams != nil {
+		ccsr, err = s.applyCloudCostFilters(ccsr, query.CloudCostParams)
+		if err != nil {
+			return nil, fmt.Errorf("failed to apply cloud cost filters: %w", err)
+		}
+	}
+
+	// 6. Transform Response
+	return transformCloudCostSetRange(ccsr), nil
+}
+
+// applyCloudCostFilters applies filtering and aggregation to cloud cost data
+func (s *MCPServer) applyCloudCostFilters(ccsr *opencost.CloudCostSetRange, params *CloudCostQuery) (*opencost.CloudCostSetRange, error) {
+	// For now, return the original data - filtering would be implemented here
+	// This would involve:
+	// 1. Parsing the filter expression
+	// 2. Applying provider, service, category, region, account filters
+	// 3. Applying aggregation if specified
+	// 4. Applying accumulation if specified
+
+	return ccsr, nil
+}
+
+// transformCloudCostSetRange converts a opencost.CloudCostSetRange into the MCP's CloudCostResponse format.
+func transformCloudCostSetRange(ccsr *opencost.CloudCostSetRange) *CloudCostResponse {
+	if ccsr == nil || len(ccsr.CloudCostSets) == 0 {
+		return &CloudCostResponse{
+			CloudCosts: make(map[string]*CloudCostSet),
+			Summary: &CloudCostSummary{
+				TotalNetCost: 0,
+			},
+		}
+	}
+
+	mcpCloudCosts := make(map[string]*CloudCostSet)
+	var totalNetCost, totalAmortizedCost, totalInvoicedCost float64
+	providerBreakdown := make(map[string]float64)
+	serviceBreakdown := make(map[string]float64)
+	regionBreakdown := make(map[string]float64)
+
+	// Process each cloud cost set in the range
+	for i, ccSet := range ccsr.CloudCostSets {
+		if ccSet == nil {
+			continue
+		}
+
+		setName := fmt.Sprintf("cloudcosts_%d", i)
+		mcpSet := &CloudCostSet{
+			Name:                  setName,
+			CloudCosts:            []*CloudCost{},
+			AggregationProperties: ccSet.AggregationProperties,
+			Window: &TimeWindow{
+				Start: *ccSet.Window.Start(),
+				End:   *ccSet.Window.End(),
+			},
+		}
+
+		// Convert each cloud cost item
+		for _, item := range ccSet.CloudCosts {
+			if item == nil {
+				continue
+			}
+
+			mcpCC := &CloudCost{
+				Properties: CloudCostProperties{
+					ProviderID:        item.Properties.ProviderID,
+					Provider:          item.Properties.Provider,
+					AccountID:         item.Properties.AccountID,
+					AccountName:       item.Properties.AccountName,
+					InvoiceEntityID:   item.Properties.InvoiceEntityID,
+					InvoiceEntityName: item.Properties.InvoiceEntityName,
+					RegionID:          item.Properties.RegionID,
+					AvailabilityZone:  item.Properties.AvailabilityZone,
+					Service:           item.Properties.Service,
+					Category:          item.Properties.Category,
+					Labels:            item.Properties.Labels,
+				},
+				Window: TimeWindow{
+					Start: *item.Window.Start(),
+					End:   *item.Window.End(),
+				},
+				ListCost: CostMetric{
+					Cost:              item.ListCost.Cost,
+					KubernetesPercent: item.ListCost.KubernetesPercent,
+				},
+				NetCost: CostMetric{
+					Cost:              item.NetCost.Cost,
+					KubernetesPercent: item.NetCost.KubernetesPercent,
+				},
+				AmortizedNetCost: CostMetric{
+					Cost:              item.AmortizedNetCost.Cost,
+					KubernetesPercent: item.AmortizedNetCost.KubernetesPercent,
+				},
+				InvoicedCost: CostMetric{
+					Cost:              item.InvoicedCost.Cost,
+					KubernetesPercent: item.InvoicedCost.KubernetesPercent,
+				},
+				AmortizedCost: CostMetric{
+					Cost:              item.AmortizedCost.Cost,
+					KubernetesPercent: item.AmortizedCost.KubernetesPercent,
+				},
+			}
+			mcpSet.CloudCosts = append(mcpSet.CloudCosts, mcpCC)
+
+			// Update summary totals
+			totalNetCost += item.NetCost.Cost
+			totalAmortizedCost += item.AmortizedNetCost.Cost
+			totalInvoicedCost += item.InvoicedCost.Cost
+
+			// Update breakdowns
+			providerBreakdown[item.Properties.Provider] += item.NetCost.Cost
+			serviceBreakdown[item.Properties.Service] += item.NetCost.Cost
+			regionBreakdown[item.Properties.RegionID] += item.NetCost.Cost
+		}
+
+		mcpCloudCosts[setName] = mcpSet
+	}
+
+	// Calculate average Kubernetes percentage
+	var avgKubernetesPercent float64
+	if len(ccsr.CloudCostSets) > 0 {
+		var totalK8sPercent float64
+		var count int
+		for _, ccSet := range ccsr.CloudCostSets {
+			for _, item := range ccSet.CloudCosts {
+				if item != nil {
+					totalK8sPercent += item.NetCost.KubernetesPercent
+					count++
+				}
+			}
+		}
+		if count > 0 {
+			avgKubernetesPercent = totalK8sPercent / float64(count)
+		}
+	}
+
+	summary := &CloudCostSummary{
+		TotalNetCost:       totalNetCost,
+		TotalAmortizedCost: totalAmortizedCost,
+		TotalInvoicedCost:  totalInvoicedCost,
+		KubernetesPercent:  avgKubernetesPercent,
+		ProviderBreakdown:  providerBreakdown,
+		ServiceBreakdown:   serviceBreakdown,
+		RegionBreakdown:    regionBreakdown,
+	}
+
+	return &CloudCostResponse{
+		CloudCosts: mcpCloudCosts,
+		Summary:    summary,
+	}
 }

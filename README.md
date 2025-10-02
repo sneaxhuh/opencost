@@ -43,6 +43,76 @@ Visit the full documentation for [recommended installation options](https://www.
 - [Prometheus Metrics](https://www.opencost.io/docs/integrations/prometheus)
 - [User Interface](https://www.opencost.io/docs/installation/ui)
 
+## MCP Server
+
+The OpenCost MCP (Model Context Protocol) server provides AI agents with access to cost allocation and asset data through a standardized interface.
+
+### Features
+
+- **Allocation Queries**: Retrieve cost allocation data with filtering and aggregation
+- **Asset Queries**: Access detailed asset information including nodes, disks, load balancers, and more
+- **Type-Specific Fields**: Full support for asset-specific parameters (GPU details, storage classes, etc.)
+- **Dynamic Session Management**: Unique session and query ID generation
+- **Request Validation**: Built-in validation using go-playground/validator
+
+### Prerequisites
+
+- Prometheus server running and accessible
+- OpenCost configured to connect to your Prometheus instance
+- MCP client that supports stdio transport (e.g., Cursor, Claude Desktop)
+
+### Building the MCP Server
+
+```bash
+# Build the MCP server binary
+go build -o mcp-server cmd/mcp-server/main.go
+```
+
+### Configuration
+
+Add the following configuration to your MCP client (e.g., Cursor's `mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "opencost": {
+      "type": "stdio",
+      "command": "/path/to/opencost/mcp-server",
+      "env": {
+        "PROMETHEUS_SERVER_ENDPOINT": "https://your-prometheus-endpoint"
+      },
+      "args": []
+    }
+  }
+}
+```
+
+### Available Tools
+
+- **`get_allocation_costs`**: Retrieve allocation cost data with parameters:
+  - `window`: Time window (e.g., "7d", "1h", "30m")
+  - `aggregate`: Aggregation properties (e.g., "namespace", "pod", "node")
+  - `step`: Resolution step size
+  - `accumulate`: Whether to accumulate over time
+  - `share_idle`: Whether to share idle costs
+  - `include_idle`: Whether to include idle resources
+  - `idle_by_node`: Whether to calculate idle by node
+  - `include_proportional_asset_resource_costs`: Include proportional asset costs
+  - `include_aggregated_metadata`: Include aggregated metadata
+  - `share_lb`: Whether to share load balancer costs
+
+- **`get_asset_costs`**: Retrieve asset cost data with parameters:
+  - `window`: Time window (e.g., "7d", "1h", "30m")
+
+### Supported Asset Types
+
+- **Node**: Compute instances with CPU, RAM, GPU details
+- **Disk**: Storage volumes with usage and cost breakdown
+- **LoadBalancer**: Load balancer instances with IP and private status
+- **Network**: Network-related costs and usage
+- **Cloud**: Cloud service costs with credit information
+- **ClusterManagement**: Kubernetes cluster management costs
+
 ## Contributing
 
 We :heart: pull requests! See [`CONTRIBUTING.md`](CONTRIBUTING.md) for information on building the project from source and contributing changes.
