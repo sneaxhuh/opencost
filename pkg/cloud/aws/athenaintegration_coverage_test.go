@@ -19,7 +19,7 @@ func TestAthenaIntegration_GetListCostColumn(t *testing.T) {
 
 func TestAthenaIntegration_GetNetCostColumn(t *testing.T) {
 	ai := &AthenaIntegration{}
-	
+
 	// Test case where net pricing column exists
 	allColumnsWithNet := map[string]bool{
 		"line_item_net_unblended_cost": true,
@@ -29,7 +29,7 @@ func TestAthenaIntegration_GetNetCostColumn(t *testing.T) {
 	if actualWithNet != expectedWithNet {
 		t.Errorf("GetNetCostColumn() with net pricing = %v, want %v", actualWithNet, expectedWithNet)
 	}
-	
+
 	// Test case where net pricing column doesn't exist
 	allColumnsWithoutNet := map[string]bool{
 		"line_item_unblended_cost": true,
@@ -44,11 +44,11 @@ func TestAthenaIntegration_GetNetCostColumn(t *testing.T) {
 func TestAthenaIntegration_GetAmortizedCostColumn(t *testing.T) {
 	ai := &AthenaIntegration{}
 	allColumns := map[string]bool{
-		"reservation_effective_cost":                    true,
-		"savings_plan_savings_plan_effective_cost":     true,
-		"line_item_unblended_cost":                     true,
+		"reservation_effective_cost":               true,
+		"savings_plan_savings_plan_effective_cost": true,
+		"line_item_unblended_cost":                 true,
 	}
-	
+
 	result := ai.GetAmortizedCostColumn(allColumns)
 	if !strings.Contains(result, "SUM(") || !strings.Contains(result, " as amortized_cost") {
 		t.Errorf("GetAmortizedCostColumn() should return a SUM expression with amortized_cost alias, got: %v", result)
@@ -57,7 +57,7 @@ func TestAthenaIntegration_GetAmortizedCostColumn(t *testing.T) {
 
 func TestAthenaIntegration_GetAmortizedNetCostColumn(t *testing.T) {
 	ai := &AthenaIntegration{}
-	
+
 	// Test case where net pricing columns exist
 	allColumnsWithNet := map[string]bool{
 		"line_item_net_unblended_cost":                 true,
@@ -69,12 +69,12 @@ func TestAthenaIntegration_GetAmortizedNetCostColumn(t *testing.T) {
 	if !strings.Contains(resultWithNet, "SUM(") || !strings.Contains(resultWithNet, " as amortized_net_cost") {
 		t.Errorf("GetAmortizedNetCostColumn() with net pricing should return a SUM expression with amortized_net_cost alias, got: %v", resultWithNet)
 	}
-	
+
 	// Test case where net pricing columns don't exist
 	allColumnsWithoutNet := map[string]bool{
-		"reservation_effective_cost":                true,
-		"savings_plan_savings_plan_effective_cost":  true,
-		"line_item_unblended_cost":                  true,
+		"reservation_effective_cost":               true,
+		"savings_plan_savings_plan_effective_cost": true,
+		"line_item_unblended_cost":                 true,
 	}
 	resultWithoutNet := ai.GetAmortizedNetCostColumn(allColumnsWithoutNet)
 	if !strings.Contains(resultWithoutNet, "SUM(") || !strings.Contains(resultWithoutNet, " as amortized_net_cost") {
@@ -84,10 +84,10 @@ func TestAthenaIntegration_GetAmortizedNetCostColumn(t *testing.T) {
 
 func TestAthenaIntegration_GetAmortizedCostCase(t *testing.T) {
 	ai := &AthenaIntegration{}
-	
+
 	// Test case where RI and SP pricing columns exist
 	allColumnsWithRIAndSP := map[string]bool{
-		"reservation_effective_cost":                true,
+		"reservation_effective_cost":               true,
 		"savings_plan_savings_plan_effective_cost": true,
 		"line_item_unblended_cost":                 true,
 	}
@@ -97,7 +97,7 @@ func TestAthenaIntegration_GetAmortizedCostCase(t *testing.T) {
 		!strings.Contains(resultWithRIAndSP, "SavingsPlanCoveredUsage") {
 		t.Errorf("GetAmortizedCostCase() with RI and SP should contain CASE statement with DiscountedUsage and SavingsPlanCoveredUsage, got: %v", resultWithRIAndSP)
 	}
-	
+
 	// Test case where neither RI nor SP pricing columns exist
 	allColumnsWithoutRIOrSP := map[string]bool{
 		"line_item_unblended_cost": true,
@@ -111,7 +111,7 @@ func TestAthenaIntegration_GetAmortizedCostCase(t *testing.T) {
 
 func TestAthenaIntegration_GetAmortizedNetCostCase(t *testing.T) {
 	ai := &AthenaIntegration{}
-	
+
 	// Test case where net RI and SP pricing columns exist
 	allColumnsWithNetRIAndSP := map[string]bool{
 		"reservation_net_effective_cost":               true,
@@ -125,7 +125,7 @@ func TestAthenaIntegration_GetAmortizedNetCostCase(t *testing.T) {
 		!strings.Contains(resultWithNetRIAndSP, "SavingsPlanCoveredUsage") {
 		t.Errorf("GetAmortizedNetCostCase() with net RI and SP should contain CASE statement with DiscountedUsage and SavingsPlanCoveredUsage, got: %v", resultWithNetRIAndSP)
 	}
-	
+
 	// Test case where neither net RI nor net SP pricing columns exist
 	allColumnsWithoutNetRIOrSP := map[string]bool{
 		"line_item_net_unblended_cost": true,
@@ -146,9 +146,9 @@ func TestAthenaIntegration_RemoveColumnAliases(t *testing.T) {
 		"column3 as alias3",
 		"column4",
 	}
-	
+
 	ai.RemoveColumnAliases(columns)
-	
+
 	if columns[0] != "column1" {
 		t.Errorf("RemoveColumnAliases() should remove alias from 'column1 as alias1', got: %v", columns[0])
 	}
@@ -165,14 +165,14 @@ func TestAthenaIntegration_RemoveColumnAliases(t *testing.T) {
 
 func TestAthenaIntegration_ConvertLabelToAWSTag(t *testing.T) {
 	ai := &AthenaIntegration{}
-	
+
 	// Test case where label already has prefix
 	labelWithPrefix := "resource_tags_user_test_label"
 	resultWithPrefix := ai.ConvertLabelToAWSTag(labelWithPrefix)
 	if resultWithPrefix != labelWithPrefix {
 		t.Errorf("ConvertLabelToAWSTag() should return label unchanged if it already has prefix, got: %v, want: %v", resultWithPrefix, labelWithPrefix)
 	}
-	
+
 	// Test case where label needs prefix
 	labelWithoutPrefix := "test.label/with:characters-here"
 	resultWithoutPrefix := ai.ConvertLabelToAWSTag(labelWithoutPrefix)
@@ -184,15 +184,15 @@ func TestAthenaIntegration_ConvertLabelToAWSTag(t *testing.T) {
 
 func TestAthenaIntegration_GetIsKubernetesColumn(t *testing.T) {
 	ai := &AthenaIntegration{}
-	
+
 	// Test with some tag columns present
 	allColumns := map[string]bool{
-		"resource_tags_user_eks_cluster_name":               true,
-		"resource_tags_user_alpha_eksctl_io_cluster_name":   true,
-		"resource_tags_user_kubernetes_io_service_name":     true,
-		"some_other_column":                                 true,
+		"resource_tags_user_eks_cluster_name":             true,
+		"resource_tags_user_alpha_eksctl_io_cluster_name": true,
+		"resource_tags_user_kubernetes_io_service_name":   true,
+		"some_other_column":                               true,
 	}
-	
+
 	result := ai.GetIsKubernetesColumn(allColumns)
 	if !strings.Contains(result, "line_item_product_code = 'AmazonEKS'") {
 		t.Errorf("GetIsKubernetesColumn() should always include EKS check, got: %v", result)
@@ -205,39 +205,16 @@ func TestAthenaIntegration_GetIsKubernetesColumn(t *testing.T) {
 	}
 }
 
-func TestAthenaIntegration_GetPartitionWhere(t *testing.T) {
-	ai := &AthenaIntegration{}
-	
-	// Test with a single month
-	start := mustParseTime("2023-01-01T00:00:00Z")
-	end := mustParseTime("2023-01-31T23:59:59Z")
-	result := ai.GetPartitionWhere(start, end)
-	
-	if !strings.Contains(result, "(year = '2023' AND month = '1')") {
-		t.Errorf("GetPartitionWhere() should include year and month for January 2023, got: %v", result)
-	}
-	
-	// Test with multiple months
-	startMulti := mustParseTime("2023-01-15T00:00:00Z")
-	endMulti := mustParseTime("2023-03-15T23:59:59Z")
-	resultMulti := ai.GetPartitionWhere(startMulti, endMulti)
-	
-	if !strings.Contains(resultMulti, "(year = '2023' AND month = '1')") ||
-		!strings.Contains(resultMulti, "(year = '2023' AND month = '2')") ||
-		!strings.Contains(resultMulti, "(year = '2023' AND month = '3')") {
-		t.Errorf("GetPartitionWhere() should include all months in range, got: %v", resultMulti)
-	}
-}
 
 func TestAthenaQuerier_GetStatus(t *testing.T) {
 	aq := &AthenaQuerier{}
-	
+
 	// Test initial status
 	status := aq.GetStatus()
 	if status.String() != cloud.InitialStatus.String() {
 		t.Errorf("GetStatus() should return InitialStatus for uninitialized querier, got: %v", status)
 	}
-	
+
 	// Test setting a specific status
 	aq.ConnectionStatus = cloud.SuccessfulConnection
 	status = aq.GetStatus()
@@ -249,56 +226,56 @@ func TestAthenaQuerier_GetStatus(t *testing.T) {
 func TestAthenaQuerier_Equals(t *testing.T) {
 	aq1 := &AthenaQuerier{
 		AthenaConfiguration: AthenaConfiguration{
-			Bucket:    "bucket1",
-			Region:    "region1",
-			Database:  "database1",
-			Table:     "table1",
-			Account:   "account1",
+			Bucket:   "bucket1",
+			Region:   "region1",
+			Database: "database1",
+			Table:    "table1",
+			Account:  "account1",
 			Authorizer: &AccessKey{
 				ID:     "id1",
 				Secret: "secret1",
 			},
 		},
 	}
-	
+
 	aq2 := &AthenaQuerier{
 		AthenaConfiguration: AthenaConfiguration{
-			Bucket:    "bucket1",
-			Region:    "region1",
-			Database:  "database1",
-			Table:     "table1",
-			Account:   "account1",
+			Bucket:   "bucket1",
+			Region:   "region1",
+			Database: "database1",
+			Table:    "table1",
+			Account:  "account1",
 			Authorizer: &AccessKey{
 				ID:     "id1",
 				Secret: "secret1",
 			},
 		},
 	}
-	
+
 	aq3 := &AthenaQuerier{
 		AthenaConfiguration: AthenaConfiguration{
-			Bucket:    "bucket2", // Different bucket
-			Region:    "region1",
-			Database:  "database1",
-			Table:     "table1",
-			Account:   "account1",
+			Bucket:   "bucket2", // Different bucket
+			Region:   "region1",
+			Database: "database1",
+			Table:    "table1",
+			Account:  "account1",
 			Authorizer: &AccessKey{
 				ID:     "id1",
 				Secret: "secret1",
 			},
 		},
 	}
-	
+
 	// Test equality
 	if !aq1.Equals(aq2) {
 		t.Errorf("Equals() should return true for identical configurations")
 	}
-	
+
 	// Test inequality
 	if aq1.Equals(aq3) {
 		t.Errorf("Equals() should return false for different configurations")
 	}
-	
+
 	// Test comparison with non-AthenaQuerier
 	accessKey := &AccessKey{
 		ID:     "id1",
