@@ -45,64 +45,92 @@ Visit the full documentation for [recommended installation options](https://www.
 
 ## MCP Server
 
-The OpenCost MCP (Model Context Protocol) server provides AI agents with access to cost allocation and asset data through a standardized interface.
+The OpenCost MCP (Model Context Protocol) server provides AI agents with access to cost allocation and asset data through a standardized interface. The MCP server is **automatically enabled** in all OpenCost deployments.
 
 ### Features
 
+- **Automatic Setup**: MCP server starts automatically with OpenCost
 - **Allocation Queries**: Retrieve cost allocation data with filtering and aggregation
 - **Asset Queries**: Access detailed asset information including nodes, disks, load balancers, and more
-- **Type-Specific Fields**: Full support for asset-specific parameters (GPU details, storage classes, etc.)
-- **Dynamic Session Management**: Unique session and query ID generation
-- **Request Validation**: Built-in validation using go-playground/validator
+- **HTTP Transport**: Uses HTTP for reliable communication with MCP clients
+- **Zero Configuration**: Works out of the box with default OpenCost deployment
 
-### Prerequisites
+### Quick Start
 
-- Prometheus server running and accessible
-- OpenCost configured to connect to your Prometheus instance
-- MCP client that supports stdio transport (e.g., Cursor, Claude Desktop)
-
-### Building the MCP Server
-
+#### Using Tilt (Development)
 ```bash
-# Build the MCP server binary
-go build -o mcp-server cmd/mcp-server/main.go
+# Clone and start OpenCost with MCP server
+git clone https://github.com/opencost/opencost.git
+cd opencost
+tilt up
 ```
 
-### Configuration
+#### Using Kubernetes (Production)
+```bash
+# Deploy OpenCost with MCP server enabled
+kubectl apply -f kubernetes/opencost.yaml
 
-Add the following configuration to your MCP client (e.g., Cursor's `mcp.json`):
+# Access MCP server via port forwarding
+kubectl port-forward svc/opencost 8081:8081
+```
+
+#### Using Helm (Production)
+```bash
+# Deploy with Helm
+helm install opencost opencost/opencost \
+  --set opencost.exporter.extraPorts[0].name=mcp-server \
+  --set opencost.exporter.extraPorts[0].containerPort=8081 \
+  --set opencost.exporter.extraEnv[0].name=MCP_SERVER_ENABLED \
+  --set opencost.exporter.extraEnv[0].value=true
+```
+
+### MCP Client Configuration
+
+Configure your MCP client (e.g., Cursor) to connect to the OpenCost MCP server:
 
 ```json
 {
   "mcpServers": {
     "opencost": {
-      "type": "stdio",
-      "command": "/path/to/opencost/mcp-server",
-      "env": {
-        "PROMETHEUS_SERVER_ENDPOINT": "https://your-prometheus-endpoint"
-      },
-      "args": []
+      "type": "http",
+      "url": "http://localhost:8081"
     }
   }
 }
 ```
 
-### Available Tools
+**For Kubernetes deployments**, use the service address:
+```json
+{
+  "mcpServers": {
+    "opencost": {
+      "type": "http",
+      "url": "http://opencost.opencost.svc.cluster.local:8081"
+    }
+  }
+}
+```
 
-- **`get_allocation_costs`**: Retrieve allocation cost data with parameters:
-  - `window`: Time window (e.g., "7d", "1h", "30m")
-  - `aggregate`: Aggregation properties (e.g., "namespace", "pod", "node")
-  - `step`: Resolution step size
-  - `accumulate`: Whether to accumulate over time
-  - `share_idle`: Whether to share idle costs
-  - `include_idle`: Whether to include idle resources
-  - `idle_by_node`: Whether to calculate idle by node
-  - `include_proportional_asset_resource_costs`: Include proportional asset costs
-  - `include_aggregated_metadata`: Include aggregated metadata
-  - `share_lb`: Whether to share load balancer costs
+### Available MCP Tools
 
-- **`get_asset_costs`**: Retrieve asset cost data with parameters:
-  - `window`: Time window (e.g., "7d", "1h", "30m")
+The MCP server provides these tools for AI agents:
+
+#### `get_allocation_costs`
+Retrieve cost allocation data with filtering and aggregation.
+
+**Parameters:**
+- `window` (required): Time window (e.g., "7d", "1h", "30m")
+- `aggregate` (optional): Aggregation properties (e.g., "namespace", "pod", "node")
+- `step` (optional): Resolution step size
+- `accumulate` (optional): Whether to accumulate over time
+- `share_idle` (optional): Whether to share idle costs
+- `include_idle` (optional): Whether to include idle resources
+
+#### `get_asset_costs`
+Retrieve asset cost data including nodes, disks, load balancers, and more.
+
+**Parameters:**
+- `window` (required): Time window (e.g., "7d", "1h", "30m")
 
 ### Supported Asset Types
 
@@ -112,6 +140,25 @@ Add the following configuration to your MCP client (e.g., Cursor's `mcp.json`):
 - **Network**: Network-related costs and usage
 - **Cloud**: Cloud service costs with credit information
 - **ClusterManagement**: Kubernetes cluster management costs
+
+### Example Usage
+
+Once configured, AI agents can query cost data like:
+
+```javascript
+// Get cost allocation for the last 7 days
+const allocation = await mcpClient.callTool('get_allocation_costs', {
+  window: '7d',
+  aggregate: 'namespace,node'
+});
+
+// Get asset costs for the last 24 hours
+const assets = await mcpClient.callTool('get_asset_costs', {
+  window: '1d'
+});
+```
+
+For detailed setup instructions, see [`kubernetes/MCP_INTEGRATION.md`](kubernetes/MCP_INTEGRATION.md).
 
 ## Contributing
 

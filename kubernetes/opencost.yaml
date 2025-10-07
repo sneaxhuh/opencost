@@ -158,6 +158,10 @@ spec:
               value: "AIzaSyD29bGxmHAVEOBYtgd8sYM2gM2ekfxQX4U" # The GCP Pricing API requires a key. This is supplied just for evaluation.
             - name: CLUSTER_ID
               value: "cluster-one" # Default cluster ID to use if cluster_id is not set in Prometheus metrics.
+            - name: MCP_SERVER_ENABLED
+              value: "true" # Enable MCP server for AI agent integration
+            - name: MCP_HTTP_PORT
+              value: "8081" # MCP server HTTP port
           imagePullPolicy: Always
           securityContext:
             allowPrivilegeEscalation: false
@@ -200,4 +204,7 @@ spec:
     - name: opencost-ui
       port: 9090
       targetPort: 9090
+    - name: mcp-server
+      port: 8081
+      targetPort: 8081
 ---

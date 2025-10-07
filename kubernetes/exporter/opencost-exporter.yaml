@@ -163,6 +163,10 @@ spec:
               value: "XXXXXXXXXXXXXXX" ## AWS Secret Access Key
             - name: AWS_REGION
               value: "us-west-2" ## AWS Region where bucket is hosted
+            - name: MCP_SERVER_ENABLED
+              value: "true" # Enable MCP server for AI agent integration
+            - name: MCP_HTTP_PORT
+              value: "8081" # MCP server HTTP port
           imagePullPolicy: Always
           volumeMounts:
           - name: tmp-volume
@@ -189,4 +193,7 @@ spec:
     - name: opencost
       port: 9003
       targetPort: 9003
+    - name: mcp-server
+      port: 8081
+      targetPort: 8081
 ---
