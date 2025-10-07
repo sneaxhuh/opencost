@@ -5,6 +5,11 @@ service:
   enabled: true
   # --  Kubernetes Service type
   type: ClusterIP
+  # -- Additional ports for the service
+  extraPorts:
+    - name: mcp-server
+      port: 8081
+      targetPort: 8081
 
 opencost:
   exporter:
@@ -12,6 +17,15 @@ opencost:
     cloudProviderApiKey: ""
     # -- Default cluster ID to use if cluster_id is not set in Prometheus metrics.
     defaultClusterId: "tilt-cluster"
+    # -- Extra container ports for MCP server
+    extraPorts:
+      - name: mcp-server
+        containerPort: 8081
+        protocol: TCP
+    # Add environment variables for MCP server configuration
+    extraEnv:
+      MCP_SERVER_ENABLED: "true"
+      MCP_HTTP_PORT: "8081"
   livenessProbe:
     # -- Whether probe is enabled
     enabled: true
