@@ -1,17 +1,21 @@
 package mcp
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/go-playground/validator/v10"
+
+	"github.com/opencost/opencost/core/pkg/filter"
+	cloudcostfilter "github.com/opencost/opencost/core/pkg/filter/cloudcost"
 	"github.com/opencost/opencost/core/pkg/opencost"
 	models "github.com/opencost/opencost/pkg/cloud/models"
 	"github.com/opencost/opencost/pkg/cloudcost"
 	"github.com/opencost/opencost/pkg/costmodel"
-	"crypto/rand"
-	"encoding/hex"
 )
 
 // QueryType defines the type of query to be executed.
@@ -87,7 +91,11 @@ type CloudCostQuery struct {
 	Service    string `json:"service,omitempty"`    // Service filter (ec2, s3, compute, etc.)
 	Category   string `json:"category,omitempty"`   // Category filter (compute, storage, network, etc.)
 	Region     string `json:"region,omitempty"`     // Region filter
-	Account    string `json:"account,omitempty"`    // Account filter
+	// Additional explicit fields for filtering
+	AccountID       string            `json:"accountID,omitempty"`       // Alias of Account; maps to accountID
+	InvoiceEntityID string            `json:"invoiceEntityID,omitempty"` // Invoice entity ID filter
+	ProviderID      string            `json:"providerID,omitempty"`      // Cloud provider resource ID filter
+	Labels          map[string]string `json:"labels,omitempty"`          // Label filters (key->value)
 }
 
 // AllocationResponse represents the allocation data returned to the AI agent.
@@ -300,17 +308,17 @@ type CostMetric struct {
 
 // MCPServer holds the dependencies for the MCP API server.
 type MCPServer struct {
-	costModel   *costmodel.CostModel
-	provider    models.Provider
-	integration cloudcost.CloudCostIntegration
+	costModel    *costmodel.CostModel
+	provider     models.Provider
+	cloudQuerier cloudcost.Querier
 }
 
 // NewMCPServer creates a new MCP Server.
-func NewMCPServer(costModel *costmodel.CostModel, provider models.Provider, integration cloudcost.CloudCostIntegration) *MCPServer {
+func NewMCPServer(costModel *costmodel.CostModel, provider models.Provider, cloudQuerier cloudcost.Querier) *MCPServer {
 	return &MCPServer{
-		costModel:   costModel,
-		provider:    provider,
-		integration: integration,
+		costModel:    costModel,
+		provider:     provider,
+		cloudQuerier: cloudQuerier,
 	}
 }
 
@@ -655,53 +663,139 @@ func transformAssetSet(assetSet *opencost.AssetSet) *AssetResponse {
 	}
 }
 
-// QueryCloudCosts translates an MCP query into a CloudCost integration query and transforms the result.
+// QueryCloudCosts translates an MCP query into a CloudCost repository query and transforms the result.
 func (s *MCPServer) QueryCloudCosts(query *OpenCostQueryRequest) (*CloudCostResponse, error) {
-	// 1. Check if cloud cost integration is available
-	if s.integration == nil {
-		return nil, fmt.Errorf("cloud cost integration not configured - check cloud-integration.json file")
+	// 1. Check if cloud cost querier is available
+	if s.cloudQuerier == nil {
+		return nil, fmt.Errorf("cloud cost querier not configured - check cloud-integration.json file")
 	}
 
-	// 2. Check integration status
-	status := s.integration.GetStatus()
-	if status != "Ready" {
-		return nil, fmt.Errorf("cloud cost integration not ready: %s", status)
-	}
-
-	// 3. Parse Window
+	// 2. Parse Window
 	window, err := opencost.ParseWindowWithOffset(query.Window, 0) // 0 offset for UTC
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse window '%s': %w", query.Window, err)
 	}
 
-	// 4. Call the cloud cost integration
-	ccsr, err := s.integration.GetCloudCost(*window.Start(), *window.End())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get cloud costs: %w", err)
+	// 3. Build query request
+	request := cloudcost.QueryRequest{
+		Start:  *window.Start(),
+		End:    *window.End(),
+		Filter: nil, // Will be set from CloudCostParams if provided
 	}
 
-	// 5. Apply aggregation and filtering if specified
+	// 4. Apply filtering and aggregation from CloudCostParams
 	if query.CloudCostParams != nil {
-		ccsr, err = s.applyCloudCostFilters(ccsr, query.CloudCostParams)
-		if err != nil {
-			return nil, fmt.Errorf("failed to apply cloud cost filters: %w", err)
-		}
+		request = s.buildCloudCostQueryRequest(request, query.CloudCostParams)
+	}
+
+	// 5. Query the repository (this handles multiple cloud providers automatically)
+	ccsr, err := s.cloudQuerier.Query(context.TODO(), request)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query cloud costs: %w", err)
 	}
 
 	// 6. Transform Response
 	return transformCloudCostSetRange(ccsr), nil
 }
 
-// applyCloudCostFilters applies filtering and aggregation to cloud cost data
-func (s *MCPServer) applyCloudCostFilters(ccsr *opencost.CloudCostSetRange, params *CloudCostQuery) (*opencost.CloudCostSetRange, error) {
-	// For now, return the original data - filtering would be implemented here
-	// This would involve:
-	// 1. Parsing the filter expression
-	// 2. Applying provider, service, category, region, account filters
-	// 3. Applying aggregation if specified
-	// 4. Applying accumulation if specified
+// buildCloudCostQueryRequest builds a QueryRequest from CloudCostParams
+func (s *MCPServer) buildCloudCostQueryRequest(request cloudcost.QueryRequest, params *CloudCostQuery) cloudcost.QueryRequest {
+	// Set aggregation
+	if params.Aggregate != "" {
+		aggregateBy := strings.Split(params.Aggregate, ",")
+		request.AggregateBy = aggregateBy
+	}
 
-	return ccsr, nil
+	// Set accumulation
+	if params.Accumulate != "" {
+		request.Accumulate = opencost.ParseAccumulate(params.Accumulate)
+	}
+
+	// Build filter from individual parameters or filter string
+	var filter filter.Filter
+	var err error
+
+	if params.Filter != "" {
+		// Parse the filter string directly
+		parser := cloudcostfilter.NewCloudCostFilterParser()
+		filter, err = parser.Parse(params.Filter)
+		if err != nil {
+			// Log error but continue without filter rather than failing the entire request
+			fmt.Printf("Warning: failed to parse filter string '%s': %v\n", params.Filter, err)
+		}
+	} else {
+		// Build filter from individual parameters
+		filter = s.buildFilterFromParams(params)
+	}
+
+	request.Filter = filter
+	return request
+}
+
+// buildFilterFromParams creates a filter from individual CloudCostQuery parameters
+func (s *MCPServer) buildFilterFromParams(params *CloudCostQuery) filter.Filter {
+	var filterParts []string
+
+	// Add provider filter
+	if params.Provider != "" {
+		filterParts = append(filterParts, fmt.Sprintf(`provider:"%s"`, params.Provider))
+	}
+
+	// Add providerID filter
+	if params.ProviderID != "" {
+		filterParts = append(filterParts, fmt.Sprintf(`providerID:"%s"`, params.ProviderID))
+	}
+
+	// Add service filter
+	if params.Service != "" {
+		filterParts = append(filterParts, fmt.Sprintf(`service:"%s"`, params.Service))
+	}
+
+	// Add category filter
+	if params.Category != "" {
+		filterParts = append(filterParts, fmt.Sprintf(`category:"%s"`, params.Category))
+	}
+
+	// Region is intentionally not supported here
+
+	// Add account filter (maps to accountID)
+	if params.AccountID != "" {
+		filterParts = append(filterParts, fmt.Sprintf(`accountID:"%s"`, params.AccountID))
+	}
+
+	// Add invoiceEntityID filter
+	if params.InvoiceEntityID != "" {
+		filterParts = append(filterParts, fmt.Sprintf(`invoiceEntityID:"%s"`, params.InvoiceEntityID))
+	}
+
+	// Add label filters (label[key]:"value")
+	if len(params.Labels) > 0 {
+		for k, v := range params.Labels {
+			if k == "" {
+				continue
+			}
+			filterParts = append(filterParts, fmt.Sprintf(`label[%s]:"%s"`, k, v))
+		}
+	}
+
+	// If no filters specified, return nil
+	if len(filterParts) == 0 {
+		return nil
+	}
+
+	// Combine all filter parts with AND logic
+	filterString := strings.Join(filterParts, " && ")
+
+	// Parse the combined filter string
+	parser := cloudcostfilter.NewCloudCostFilterParser()
+	filter, err := parser.Parse(filterString)
+	if err != nil {
+		// Log error but return nil rather than failing
+		fmt.Printf("Warning: failed to parse combined filter '%s': %v\n", filterString, err)
+		return nil
+	}
+
+	return filter
 }
 
 // transformCloudCostSetRange converts a opencost.CloudCostSetRange into the MCP's CloudCostResponse format.
@@ -799,22 +893,25 @@ func transformCloudCostSetRange(ccsr *opencost.CloudCostSetRange) *CloudCostResp
 		mcpCloudCosts[setName] = mcpSet
 	}
 
-	// Calculate average Kubernetes percentage
+	// Calculate cost-weighted average Kubernetes percentage (by NetCost)
 	var avgKubernetesPercent float64
-	if len(ccsr.CloudCostSets) > 0 {
-		var totalK8sPercent float64
-		var count int
-		for _, ccSet := range ccsr.CloudCostSets {
-			for _, item := range ccSet.CloudCosts {
-				if item != nil {
-					totalK8sPercent += item.NetCost.KubernetesPercent
-					count++
-				}
+	var numerator, denominator float64
+	for _, ccSet := range ccsr.CloudCostSets {
+		for _, item := range ccSet.CloudCosts {
+			if item == nil {
+				continue
 			}
+			cost := item.NetCost.Cost
+			percent := item.NetCost.KubernetesPercent
+			if cost <= 0 {
+				continue
+			}
+			numerator += cost * percent
+			denominator += cost
 		}
-		if count > 0 {
-			avgKubernetesPercent = totalK8sPercent / float64(count)
-		}
+	}
+	if denominator > 0 {
+		avgKubernetesPercent = numerator / denominator
 	}
 
 	summary := &CloudCostSummary{

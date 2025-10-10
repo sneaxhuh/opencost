@@ -10,6 +10,7 @@ import (
 	"github.com/opencost/opencost/core/pkg/util/apiutil"
 	"github.com/opencost/opencost/pkg/cloud/models"
 	"github.com/opencost/opencost/pkg/cloud/provider"
+	"github.com/opencost/opencost/pkg/cloudcost"
 	"github.com/opencost/opencost/pkg/customcost"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
@@ -54,12 +55,13 @@ func Execute(conf *Config) error {
 		cp = a.CloudProvider
 	}
 
+	var cloudCostPipelineService *cloudcost.PipelineService
 	if conf.CloudCostEnabled {
 		var providerConfig models.ProviderConfig
 		if cp != nil {
 			providerConfig = provider.ExtractConfigFromProviders(cp)
 		}
-		costmodel.InitializeCloudCost(router, providerConfig)
+		cloudCostPipelineService = costmodel.InitializeCloudCost(router, providerConfig)
 	}
 
 	var customCostPipelineService *customcost.PipelineService
@@ -73,7 +75,13 @@ func Execute(conf *Config) error {
 
 	// Initialize MCP Server if enabled and Kubernetes is available
 	if conf.MCPServerEnabled && a != nil {
-		err := StartMCPServer(context.Background(), a)
+		// Get cloud cost querier if cloud costs are enabled
+		var cloudCostQuerier cloudcost.Querier
+		if conf.CloudCostEnabled && cloudCostPipelineService != nil {
+			cloudCostQuerier = cloudCostPipelineService.GetCloudCostQuerier()
+		}
+
+		err := StartMCPServer(context.Background(), a, cloudCostQuerier)
 		if err != nil {
 			log.Errorf("Failed to start MCP server: %v", err)
 		}
@@ -128,20 +136,16 @@ func StartExportWorker(ctx context.Context, model costmodel.AllocationModel) err
 }
 
 // StartMCPServer starts the MCP server as a background service
-func StartMCPServer(ctx context.Context, accesses *costmodel.Accesses) error {
-	if accesses == nil {
-		return fmt.Errorf("cost model accesses not available")
-	}
-
+func StartMCPServer(ctx context.Context, accesses *costmodel.Accesses, cloudCostQuerier cloudcost.Querier) error {
 	log.Info("Initializing MCP server...")
 
 	// Create MCP server using existing OpenCost dependencies
-	mcpServer := opencost_mcp.NewMCPServer(accesses.Model, accesses.CloudProvider, nil)
+	mcpServer := opencost_mcp.NewMCPServer(accesses.Model, accesses.CloudProvider, cloudCostQuerier)
 
 	// Create MCP SDK server
 	sdkServer := mcp_sdk.NewServer(&mcp_sdk.Implementation{
 		Name:    "opencost-mcp-server",
-		Version: "v1.0.0",
+		Version: version.Version,
 	}, nil)
 
 	// Define tool handlers
@@ -215,7 +219,7 @@ func StartMCPServer(ctx context.Context, accesses *costmodel.Accesses) error {
 				Service:    args.Service,
 				Category:   args.Category,
 				Region:     args.Region,
-				Account:    args.Account,
+				AccountID:  args.Account,
 			},
 		}
 
@@ -256,7 +260,7 @@ func StartMCPServer(ctx context.Context, accesses *costmodel.Accesses) error {
 
 	// Add logging middleware
 	loggingHandler := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		log.Infof("MCP HTTP request: %s %s from %s", req.Method, req.URL.Path, req.RemoteAddr)
+		log.Debugf("MCP HTTP request: %s %s from %s", req.Method, req.URL.Path, req.RemoteAddr)
 		handler.ServeHTTP(w, req)
 	})
 

@@ -29,9 +29,17 @@ To see the full functionality of OpenCost you can view [OpenCost features](https
 
 ## Getting Started
 
-You can deploy OpenCost on any Kubernetes 1.20+ cluster in a matter of minutes, if not seconds!
+OpenCost is now installed and managed via the official Helm chart only.
 
-Visit the full documentation for [recommended installation options](https://www.opencost.io/docs/installation/install).
+Quick install on any Kubernetes 1.20+ cluster:
+
+```bash
+helm repo add opencost https://opencost.github.io/opencost-helm-chart
+helm repo update
+helm install opencost opencost/opencost
+```
+
+Note: The standalone Kubernetes manifest files have been removed. Please use Helm for all installations and upgrades. See the [Helm installation docs](https://www.opencost.io/docs/installation/install) for details and configuration.
 
 > **Note for sharded Prometheus users:**
 > If you run Prometheus in a sharded (HA) setup, set `PROMETHEUS_SERVER_ENDPOINT` to a global query endpoint (e.g., Thanos Query, Cortex, or Mimir). Pointing to a single Prometheus pod may result in incomplete or intermittent export results. See the [Prometheus integration docs](https://www.opencost.io/docs/installation/prometheus) for details.
@@ -45,15 +53,18 @@ Visit the full documentation for [recommended installation options](https://www.
 
 ## MCP Server
 
-The OpenCost MCP (Model Context Protocol) server provides AI agents with access to cost allocation and asset data through a standardized interface. The MCP server is **automatically enabled** in all OpenCost deployments.
+The OpenCost MCP (Model Context Protocol) server provides AI agents with access to cost allocation and asset data through a standardized interface. The MCP server is **enabled by default** in all OpenCost deployments, runs on port 8081, and is **built into the Helm chart** for easy production deployment. Users have full control to disable it or configure custom ports and settings.
 
 ### Features
 
-- **Automatic Setup**: MCP server starts automatically with OpenCost
+- **Enabled by Default**: MCP server starts automatically with OpenCost
+- **Full User Control**: Easy to disable or configure port and settings
 - **Allocation Queries**: Retrieve cost allocation data with filtering and aggregation
 - **Asset Queries**: Access detailed asset information including nodes, disks, load balancers, and more
+- **Cloud Cost Queries**: Query cloud cost data with provider, service, and region filtering
 - **HTTP Transport**: Uses HTTP for reliable communication with MCP clients
 - **Zero Configuration**: Works out of the box with default OpenCost deployment
+- **Helm Integration**: Built into the official Helm chart for production deployments
 
 ### Quick Start
 
@@ -65,29 +76,66 @@ cd opencost
 tilt up
 ```
 
-#### Using Kubernetes (Production)
-```bash
-# Deploy OpenCost with MCP server enabled
-kubectl apply -f kubernetes/opencost.yaml
+Tilt configuration notes (cloud costs):
 
-# Access MCP server via port forwarding
-kubectl port-forward svc/opencost 8081:8081
+OpenCost's Tilt values (`tilt-values.yaml`) include extra environment variables to enable Cloud Cost ingestion in dev:
+
+```yaml
+# tilt-values.yaml (excerpt)
+opencost:
+  exporter:
+    extraEnv:
+      CLOUD_COST_ENABLED: "true"
+      CLOUD_COST_CONFIG_PATH: "/var/cloud-integration/cloud-integration.json"
 ```
+
+- Set `CLOUD_COST_ENABLED` to "true" to turn on cloud cost ingestion.
+- Point `CLOUD_COST_CONFIG_PATH` to the mounted cloud integration file used by Tilt (e.g., `/var/cloud-integration/cloud-integration.json`).
+- Adjust other values in `tilt-values.yaml` as needed during development.
 
 #### Using Helm (Production)
 ```bash
-# Deploy with Helm
-helm install opencost opencost/opencost \
-  --set opencost.exporter.extraPorts[0].name=mcp-server \
-  --set opencost.exporter.extraPorts[0].containerPort=8081 \
-  --set opencost.exporter.extraEnv[0].name=MCP_SERVER_ENABLED \
-  --set opencost.exporter.extraEnv[0].value=true
+# Add the OpenCost Helm repository
+helm repo add opencost https://opencost.github.io/opencost-helm-chart
+helm repo update
+
+# Deploy OpenCost with MCP server (enabled by default)
+helm install opencost opencost/opencost
+
+# Access MCP server via port forwarding (example)
+kubectl port-forward svc/opencost 8081:8081
 ```
+
+The MCP server is **enabled by default** in the Helm chart. For custom configuration:
+
+```bash
+# Deploy with MCP server disabled
+helm install opencost opencost/opencost \
+  --set opencost.mcp.enabled=false
+
+# Deploy with custom MCP port
+helm install opencost opencost/opencost \
+  --set opencost.mcp.port=9091
+
+# Deploy with debug logging
+helm install opencost opencost/opencost \
+  --set opencost.mcp.extraEnv.MCP_LOG_LEVEL=debug
+```
+
+#### Configuration Summary
+
+| Configuration | Command | Description |
+|---------------|---------|-------------|
+| **Default** | `helm install opencost opencost/opencost` | MCP enabled on port 8081 |
+| **Disable** | `--set opencost.mcp.enabled=false` | Completely disable MCP server |
+| **Custom Port** | `--set opencost.mcp.port=9091` | Use different port |
+| **Debug Mode** | `--set opencost.mcp.extraEnv.MCP_LOG_LEVEL=debug` | Enable debug logging |
 
 ### MCP Client Configuration
 
 Configure your MCP client (e.g., Cursor) to connect to the OpenCost MCP server:
 
+**Default configuration (port 8081):**
 ```json
 {
   "mcpServers": {
@@ -99,13 +147,37 @@ Configure your MCP client (e.g., Cursor) to connect to the OpenCost MCP server:
 }
 ```
 
-**For Kubernetes deployments**, use the service address:
+**Custom port configuration:**
+```json
+{
+  "mcpServers": {
+    "opencost": {
+      "type": "http",
+      "url": "http://localhost:9091"
+    }
+  }
+}
+```
+
+**For Kubernetes deployments:**
 ```json
 {
   "mcpServers": {
     "opencost": {
       "type": "http",
       "url": "http://opencost.opencost.svc.cluster.local:8081"
+    }
+  }
+}
+```
+
+**For external access (with LoadBalancer/Ingress):**
+```json
+{
+  "mcpServers": {
+    "opencost": {
+      "type": "http",
+      "url": "http://your-opencost-domain.com:8081"
     }
   }
 }
@@ -132,6 +204,19 @@ Retrieve asset cost data including nodes, disks, load balancers, and more.
 **Parameters:**
 - `window` (required): Time window (e.g., "7d", "1h", "30m")
 
+#### `get_cloud_costs`
+Retrieve cloud cost data with provider, service, and region filtering.
+
+**Parameters:**
+- `window` (required): Time window (e.g., "7d", "1h", "30m")
+- `aggregate` (optional): Aggregation properties (e.g., "provider", "service", "region")
+- `accumulate` (optional): Time accumulation ("day", "week", "month")
+- `provider` (optional): Filter by cloud provider (e.g., "aws", "gcp", "azure")
+- `service` (optional): Filter by service (e.g., "ec2", "compute", "s3")
+- `category` (optional): Filter by category (e.g., "compute", "storage", "network")
+- `region` (optional): Filter by region (e.g., "us-west-1", "us-central1")
+- `accountID` (optional): Filter by account ID
+
 ### Supported Asset Types
 
 - **Node**: Compute instances with CPU, RAM, GPU details
@@ -156,9 +241,19 @@ const allocation = await mcpClient.callTool('get_allocation_costs', {
 const assets = await mcpClient.callTool('get_asset_costs', {
   window: '1d'
 });
+
+// Get cloud costs for AWS EC2 in us-west-1
+const cloudCosts = await mcpClient.callTool('get_cloud_costs', {
+  window: '7d',
+  aggregate: 'service',
+  provider: 'aws',
+  service: 'ec2',
+  accumulate: 'day',
+  filter: 'regionID:"us-west-1"'
+});
 ```
 
-For detailed setup instructions, see [`kubernetes/MCP_INTEGRATION.md`](kubernetes/MCP_INTEGRATION.md).
+For detailed setup instructions and advanced configuration, see the [Helm chart documentation](https://github.com/opencost/opencost-helm-chart/blob/main/charts/opencost/README.md#mcp-server).
 
 ## Contributing
 
