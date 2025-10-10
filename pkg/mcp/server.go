@@ -37,7 +37,6 @@ type MCPRequest struct {
 type MCPResponse struct {
 	Data      interface{}   `json:"data"`
 	QueryInfo QueryMetadata `json:"queryInfo"`
-	Summary   *DataSummary  `json:"summary,omitempty"`
 }
 
 // QueryMetadata contains metadata about the query execution.
@@ -45,12 +44,6 @@ type QueryMetadata struct {
 	QueryID        string        `json:"queryId"`
 	Timestamp      time.Time     `json:"timestamp"`
 	ProcessingTime time.Duration `json:"processingTime"`
-}
-
-// DataSummary provides a summary of the data.
-type DataSummary struct {
-	Title   string `json:"title"`
-	Content string `json:"content"`
 }
 
 // OpenCostQueryRequest provides a unified interface for all OpenCost query types.
@@ -324,41 +317,21 @@ func NewMCPServer(costModel *costmodel.CostModel, provider models.Provider, clou
 
 // ProcessMCPRequest processes an MCP request and returns an MCP response.
 
-func (s *MCPServer) summarizeAllocationData(request *OpenCostQueryRequest, resp *AllocationResponse) *DataSummary {
-	// Basic summary implementation
-	var totalCost float64
-	for _, allocationSet := range resp.Allocations {
-		totalCost += allocationSet.TotalCost()
-	}
-
-	return &DataSummary{
-		Title:   fmt.Sprintf("Total Cost Over '%s'", request.Window),
-		Content: fmt.Sprintf("The total cost for the selected window is $%.2f.", totalCost),
-	}
-}
-
 func (s *MCPServer) ProcessMCPRequest(request *MCPRequest) (*MCPResponse, error) {
 	// 1. Validate Request
 	if err := validate.Struct(request); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
 
-	// 3. Query Dispatching
+	// 2. Query Dispatching
 	var data interface{}
 	var err error
-	var summary *DataSummary
 
 	queryStart := time.Now()
 
 	switch request.Query.QueryType {
 	case AllocationQueryType:
-		allocationResponse, err := s.QueryAllocations(request.Query)
-		if err != nil {
-			return nil, err // Propagate error
-		}
-		data = allocationResponse
-
-		summary = s.summarizeAllocationData(request.Query, allocationResponse)
+		data, err = s.QueryAllocations(request.Query)
 	case AssetQueryType:
 		data, err = s.QueryAssets(request.Query)
 	case CloudCostQueryType:
@@ -374,7 +347,7 @@ func (s *MCPServer) ProcessMCPRequest(request *MCPRequest) (*MCPResponse, error)
 
 	processingTime := time.Since(queryStart)
 
-	// 5. Construct Final Response
+	// 3. Construct Final Response
 	mcpResponse := &MCPResponse{
 		Data: data,
 		QueryInfo: QueryMetadata{
@@ -382,7 +355,6 @@ func (s *MCPServer) ProcessMCPRequest(request *MCPRequest) (*MCPResponse, error)
 			Timestamp:      time.Now(),
 			ProcessingTime: processingTime,
 		},
-		Summary: summary,
 	}
 	return mcpResponse, nil
 }
@@ -783,8 +755,8 @@ func (s *MCPServer) buildFilterFromParams(params *CloudCostQuery) filter.Filter 
 		return nil
 	}
 
-	// Combine all filter parts with AND logic
-	filterString := strings.Join(filterParts, " && ")
+	// Combine all filter parts with AND logic (parser expects 'and')
+	filterString := strings.Join(filterParts, " and ")
 
 	// Parse the combined filter string
 	parser := cloudcostfilter.NewCloudCostFilterParser()
