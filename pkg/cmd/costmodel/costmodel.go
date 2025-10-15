@@ -173,6 +173,7 @@ func StartMCPServer(ctx context.Context, accesses *costmodel.Accesses, cloudCost
 				IncludeProportionalAssetResourceCosts: args.IncludeProportionalAssetResourceCosts,
 				IncludeAggregatedMetadata:             args.IncludeAggregatedMetadata,
 				ShareLB:                               args.ShareLB,
+				Filter:                                args.Filter,
 			},
 		}
 
@@ -299,6 +300,7 @@ type AllocationArgs struct {
 	IncludeProportionalAssetResourceCosts bool   `json:"include_proportional_asset_resource_costs,omitempty"`
 	IncludeAggregatedMetadata             bool   `json:"include_aggregated_metadata,omitempty"`
 	ShareLB                               bool   `json:"share_lb,omitempty"`
+	Filter                                string `json:"filter,omitempty"`
 }
 
 type AssetArgs struct {

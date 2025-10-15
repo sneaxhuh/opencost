@@ -11,6 +11,7 @@ import (
 	"github.com/go-playground/validator/v10"
 
 	"github.com/opencost/opencost/core/pkg/filter"
+	"github.com/opencost/opencost/core/pkg/filter/allocation"
 	cloudcostfilter "github.com/opencost/opencost/core/pkg/filter/cloudcost"
 	"github.com/opencost/opencost/core/pkg/opencost"
 	models "github.com/opencost/opencost/pkg/cloud/models"
@@ -68,6 +69,7 @@ type AllocationQuery struct {
 	IncludeProportionalAssetResourceCosts bool          `json:"includeProportionalAssetResourceCosts,omitempty"`
 	IncludeAggregatedMetadata             bool          `json:"includeAggregatedMetadata,omitempty"`
 	ShareLB                               bool          `json:"sharelb,omitempty"`
+	Filter                                string        `json:"filter,omitempty"` // Filter expression for allocations (e.g., "cluster:production", "namespace:kube-system")
 }
 
 // AssetQuery contains the parameters for an asset query.
@@ -383,6 +385,7 @@ func (s *MCPServer) QueryAllocations(query *OpenCostQueryRequest) (*AllocationRe
 	var aggregateBy []string
 	var includeIdle, idleByNode, includeProportionalAssetResourceCosts, includeAggregatedMetadata, sharedLoadBalancer, shareIdle bool
 	var accumulateBy opencost.AccumulateOption
+	var filterString string
 
 	// 3. Parse allocation parameters if provided
 	if query.AllocationParams != nil {
@@ -406,6 +409,18 @@ func (s *MCPServer) QueryAllocations(query *OpenCostQueryRequest) (*AllocationRe
 		sharedLoadBalancer = query.AllocationParams.ShareLB
 		shareIdle = query.AllocationParams.ShareIdle
 
+		// Set filter string
+		filterString = query.AllocationParams.Filter
+
+		// Validate filter string if provided
+		if filterString != "" {
+			parser := allocation.NewAllocationFilterParser()
+			_, err := parser.Parse(filterString)
+			if err != nil {
+				return nil, fmt.Errorf("invalid allocation filter '%s': %w", filterString, err)
+			}
+		}
+
 		// Set accumulation option
 		if query.AllocationParams.Accumulate {
 			accumulateBy = opencost.AccumulateOptionAll
@@ -416,6 +431,7 @@ func (s *MCPServer) QueryAllocations(query *OpenCostQueryRequest) (*AllocationRe
 		// Default values when no parameters provided
 		step = window.Duration()
 		accumulateBy = opencost.AccumulateOptionNone
+		filterString = ""
 	}
 
 	// 4. Call the existing QueryAllocation function with all parameters
@@ -430,6 +446,7 @@ func (s *MCPServer) QueryAllocations(query *OpenCostQueryRequest) (*AllocationRe
 		sharedLoadBalancer,
 		accumulateBy,
 		shareIdle,
+		filterString,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query allocations: %w", err)
