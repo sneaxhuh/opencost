@@ -1216,7 +1216,6 @@ func TestComputeEfficiencyMetric_CostCalculations(t *testing.T) {
 		RAMBytesRequestAverage: 2.0e9,
 		CPUCost:                10.0, // $10 for CPU
 		RAMCost:                5.0,  // $5 for RAM
-		PVCost:                 2.0,  // $2 for PV
 		NetworkCost:            1.0,  // $1 for network
 		SharedCost:             0.5,  // $0.5 shared
 		ExternalCost:           0.5,  // $0.5 external
@@ -1228,7 +1227,7 @@ func TestComputeEfficiencyMetric_CostCalculations(t *testing.T) {
 	require.NotNil(t, result)
 
 	// Current total cost should include all costs
-	expectedCurrentCost := 10.0 + 5.0 + 2.0 + 1.0 + 0.5 + 0.5 + 1.0 // = 20.0
+	expectedCurrentCost := 10.0 + 5.0 + 1.0 + 0.5 + 0.5 + 1.0 // = 18.0
 	assert.Equal(t, expectedCurrentCost, result.CurrentTotalCost)
 
 	// Recommended cost should be lower due to right-sizing
@@ -1255,7 +1254,6 @@ func TestComputeEfficiencyMetric_OtherCostsPreserved(t *testing.T) {
 		RAMBytesRequestAverage: 2.0e9,
 		CPUCost:                10.0,
 		RAMCost:                5.0,
-		PVCost:                 5.0, // Fixed cost
 		NetworkCost:            2.0, // Fixed cost
 		SharedCost:             1.0, // Fixed cost
 		ExternalCost:           1.0, // Fixed cost
@@ -1266,9 +1264,9 @@ func TestComputeEfficiencyMetric_OtherCostsPreserved(t *testing.T) {
 
 	require.NotNil(t, result)
 
-	// The "other costs" (PV, Network, Shared, External, GPU) should be preserved
+	// The "other costs" (Network, Shared, External, GPU) should be preserved
 	// in the recommended cost calculation
-	otherCosts := 5.0 + 2.0 + 1.0 + 1.0 + 0.0 // = 9.0
+	otherCosts := 2.0 + 1.0 + 1.0 + 0.0 // = 4.0
 
 	// CPU and RAM costs should be reduced based on right-sizing
 	// Original: 10.0 + 5.0 = 15.0
@@ -1306,8 +1304,6 @@ func TestQueryEfficiency_DefaultBufferMultiplier(t *testing.T) {
 		},
 	}
 
-	// We can't easily test the full query without a mock cost model,
-	// but we can verify the struct behavior
 	assert.Nil(t, req.EfficiencyParams.EfficiencyBufferMultiplier)
 }
 
