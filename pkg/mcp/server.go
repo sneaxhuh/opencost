@@ -1141,9 +1141,10 @@ func computeEfficiencyMetric(alloc *opencost.Allocation, bufferMultiplier float6
 	resultingCPUEff := safeDiv(cpuCoresUsed, recommendedCPU)
 	resultingMemEff := safeDiv(ramBytesUsed, recommendedRAM)
 
-	// Calculate cost per unit (to estimate recommended cost)
-	cpuCostPerCoreHour := safeDiv(alloc.CPUCost, alloc.CPUCoreHours)
-	ramCostPerByteHour := safeDiv(alloc.RAMCost, alloc.RAMByteHours)
+	// Calculate cost per unit based on REQUESTED amounts (not used amounts)
+	// This gives us the cost per core-hour or byte-hour that the cluster charges
+	cpuCostPerCoreHour := safeDiv(alloc.CPUCost, cpuCoresRequested*hours)
+	ramCostPerByteHour := safeDiv(alloc.RAMCost, ramBytesRequested*hours)
 
 	// Current total cost
 	currentTotalCost := alloc.TotalCost()

@@ -1032,10 +1032,11 @@ func TestComputeEfficiencyMetric_NilAllocation(t *testing.T) {
 }
 
 func TestComputeEfficiencyMetric_ZeroMinutes(t *testing.T) {
+	now := time.Now()
 	alloc := &opencost.Allocation{
 		Name:  "test-pod",
-		Start: time.Now(),
-		End:   time.Now(), // Same time, so 0 minutes
+		Start: now,
+		End:   now, // Same time, so 0 minutes
 	}
 
 	result := computeEfficiencyMetric(alloc, 1.2)
@@ -1272,8 +1273,9 @@ func TestComputeEfficiencyMetric_OtherCostsPreserved(t *testing.T) {
 	// Original: 10.0 + 5.0 = 15.0
 	// Usage: 1 core + 1GB
 	// Recommended: 1.2 cores + 1.2GB
-	cpuCostPerCoreHour := 10.0 / 24.0
-	ramCostPerByteHour := 5.0 / 24.0e9
+	// Cost is calculated based on REQUESTED amounts (2 cores, 2GB)
+	cpuCostPerCoreHour := 10.0 / (2.0 * 24.0)  // CPU cost / (requested cores * hours)
+	ramCostPerByteHour := 5.0 / (2.0e9 * 24.0) // RAM cost / (requested bytes * hours)
 	expectedRecommendedCPUCost := 1.2 * 24.0 * cpuCostPerCoreHour
 	expectedRecommendedRAMCost := 1.2e9 * 24.0 * ramCostPerByteHour
 	expectedRecommendedTotal := expectedRecommendedCPUCost + expectedRecommendedRAMCost + otherCosts
