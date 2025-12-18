@@ -71,8 +71,8 @@ func NewGCSStorageWith(gc GCSConfig) (*GCSStorage, error) {
 	}, nil
 }
 
-// Name returns the bucket name for gcs.
-func (gs *GCSStorage) Name() string {
+// String returns the bucket name for gcs.
+func (gs *GCSStorage) String() string {
 	return gs.name
 }
 
@@ -111,8 +111,7 @@ func (gs *GCSStorage) Stat(name string) (*StorageInfo, error) {
 
 // isDoesNotExist returns true if the error matches resource not exists errors.
 func (gs *GCSStorage) isDoesNotExist(err error) bool {
-	msg := err.Error()
-	return msg == gcs.ErrBucketNotExist.Error() || msg == gcs.ErrObjectNotExist.Error()
+	return errors.Is(err, gcs.ErrObjectNotExist)
 }
 
 // Read uses the relative path of the storage combined with the provided path to
@@ -240,7 +239,7 @@ func (gs *GCSStorage) List(path string) ([]*StorageInfo, error) {
 func (gs *GCSStorage) ListDirectories(path string) ([]*StorageInfo, error) {
 	path = trimLeading(path)
 
-	log.Debugf("GCSStorage::List(%s)", path)
+	log.Debugf("GCSStorage::ListDirectories(%s)", path)
 	ctx := context.Background()
 
 	// Ensure the object name actually ends with a dir suffix. Otherwise we'll just iterate the
@@ -262,17 +261,12 @@ func (gs *GCSStorage) ListDirectories(path string) ([]*StorageInfo, error) {
 			break
 		}
 		if err != nil {
-			return nil, errors.Wrap(err, "list gcs objects")
+			return nil, errors.Wrap(err, "list gcs prefixes")
 		}
 
-		// ignore the root path directory
-		if attrs.Name == path {
-			continue
-		}
-
-		// We filter directories using DirDelim, so a nameless entry is a dir
+		// We filter directories using DirDelim, so a non empty prefix entry is a prefix(directory)
 		// See gcs.ObjectAttrs Prefix property
-		if attrs.Name == "" {
+		if attrs.Prefix != "" {
 			stats = append(stats, &StorageInfo{
 				Name:    attrs.Prefix,
 				Size:    attrs.Size,
