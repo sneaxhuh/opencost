@@ -37,7 +37,7 @@ func (cm *CostModel) ComputeAllocation(start, end time.Time) (*opencost.Allocati
 		return as, err
 	}
 
-	// If the duration exceeds the configured MaxPrometheusQueryDuration, then
+	// If the duration exceeds the configured BatchDuration, then
 	// query for maximum-sized AllocationSets, and accumulate as we go.
 
 	// s and e track the coverage of the entire given window over multiple
